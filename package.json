@@ -1,0 +1,28 @@
+{
+  "name": "restaurante-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "Bot de WhatsApp para restaurantes pequeños - órdenes + stock simple",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js"
+  },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "restaurante",
+    "node"
+  ],
+  "author": "romancp85",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.7",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.1",
+    "mongoose": "^8.7.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7"
+  }
+}
