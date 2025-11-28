@@ -1,4 +1,5 @@
 // src/server.js - El corazón del proyecto (VERSIÓN FINAL QUE FUNCIONA 100%)
+//es un comentario probando el GIT
 import 'dotenv/config';                 // ← ESTA ES LA LÍNEA MÁGICA (ES modules)
 import express from 'express';
 import mongoose from 'mongoose';
