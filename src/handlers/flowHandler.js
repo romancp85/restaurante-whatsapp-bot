@@ -7,10 +7,8 @@ import MenuItem from '../models/MenuItem.js';
 import Pedido from '../models/Pedido.js';   
 import { updateUserSession, deleteUserSession } from '../services/sessionService.js';
 
-// 🛑 CONFIGURACIÓN CENTRAL DE MÉTODOS DE PAGO 🛑
-// Define qué métodos acepta actualmente el restaurante.
-// Opciones válidas: 'Efectivo', 'Transferencia', 'Tarjeta'
-const METODOS_ACEPTADOS = ['Efectivo', 'Transferencia']; // <-- ¡AJUSTA ESTA LISTA!
+// 🛑 IMPORTAR EL NUEVO SERVICIO DE CONFIGURACIÓN 🛑
+import { getGlobalConfig } from '../services/configServiceDB.js'; 
 
 
 // Usar variables de entorno para el token y phone ID
@@ -255,26 +253,27 @@ const enviarResumen = async (to, session) => {
 
 // 🛑 FUNCIÓN enviarMetodoPago MODIFICADA 🛑
 const enviarMetodoPago = async (to, session) => {
+    // 🛑 1. OBTENER LA CONFIGURACIÓN DE PAGO DESDE LA DB 🛑
+    const config = await getGlobalConfig();
+    const metodosAceptados = config.acceptedPaymentMethods || ['Efectivo']; // Fallback seguro
+    
     const subtotal = session.cart.reduce((s, i) => s + i.precio * i.cantidad, 0);
     const total = subtotal + 3000;
     
-    // 1. Definir todos los botones posibles con su método asociado
+    // 2. Definir todos los botones posibles
     const ALL_BUTTONS_CONFIG = [
         { id: 'PAY_CASH', title: '💵 Efectivo', method: 'Efectivo' },
         { id: 'PAY_TRANSFER', title: '🏦 Transferencia', method: 'Transferencia' },
         { id: 'PAY_CARD', title: '💳 Tarjeta', method: 'Tarjeta' },
     ];
 
-    // 2. Filtrar los botones basados en la lista de METODOS_ACEPTADOS
+    // 3. Filtrar los botones basados en la lista de la DB
     const buttons = ALL_BUTTONS_CONFIG
-        // Solo incluimos los métodos que están en nuestra lista de aceptación
-        .filter(b => METODOS_ACEPTADOS.includes(b.method))
-        // Mapeamos al formato que espera la API de WhatsApp
+        .filter(b => metodosAceptados.includes(b.method))
         .map(b => ({ type: 'reply', reply: { id: b.id, title: b.title } }));
 
     if (buttons.length === 0) {
-        // Esto es un fallback de seguridad si la lista METODOS_ACEPTADOS está vacía
-        await enviarTexto(to, "Lo siento, no tenemos métodos de pago habilitados en este momento.");
+        await enviarTexto(to, "Lo siento, no hay métodos de pago habilitados. Por favor, inténtalo más tarde.");
         return;
     }
 
