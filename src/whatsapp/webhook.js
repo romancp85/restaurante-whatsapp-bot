@@ -1,17 +1,19 @@
-// src/whatsapp/webhook.js - CÓDIGO FINAL CORREGIDO Y ANTIFRÁGIL
+// src/whatsapp/webhook.js - VERSIÓN FINAL ANTIFRAGIL CON IA
 
 import { getUserSession, updateUserSession } from '../services/sessionService.js';
-import { isBusinessOpen } from '../services/configService.js'; // ⬅️ IMPORTACIÓN DE HORARIOS
+import { isBusinessOpen } from '../services/configService.js';
+import { analizarPedidoConIA } from '../services/aiService.js'; // ⬅️ NUEVA IMPORTACIÓN DE IA
 import axios from 'axios';
 import {
     enviarBienvenida,
     enviarMenuPrincipal,
     enviarCategoria,
     agregarAlCarrito,
+    agregarItemsIAAlCarrito, // ⬅️ NUEVA FUNCIÓN PARA PROCESAR EL JSON DE LA IA
     enviarBotonFinalizar,
     enviarResumen,
     enviarConfirmacionFinal,
-    enviarTexto // Necesaria para enviar el mensaje de "Cerrado"
+    enviarTexto
 } from '../handlers/flowHandler.js';
 import logger from '../utils/logger.js';
 
@@ -34,25 +36,23 @@ export const receiveMessage = async (req, res) => {
         if (!message) return res.sendStatus(200);
 
         const from = message.from;
-        
+
         // 🛑 1. INTERCEPTACIÓN DE HORARIOS (POSICIÓN CRÍTICA) 🛑
         const { open, message: closedMessage } = await isBusinessOpen(); 
         
         if (!open) {
-            // Si está cerrado, envía el mensaje de cerrado y termina toda la ejecución.
             await enviarTexto(from, closedMessage);
             return res.sendStatus(200); 
         }
         // ------------------------------------------------------------------
 
-        // Ahora procedemos solo si está abierto
         const text = (message.text?.body || '').trim().toLowerCase();
         const isButton = message.interactive?.type === 'button_reply';
         const buttonId = isButton ? message.interactive.button_reply.id : null;
 
         let session = await getUserSession(from) || { step: 'start', cart: [], name: '', address: '', total: 0 };
 
-        // 2️⃣ PREGUNTA POR SU PEDIDO EN CUALQUIER MOMENTO (Ahora es el primer IF)
+        // 2️⃣ PREGUNTA POR SU PEDIDO EN CUALQUIER MOMENTO
         if (text.includes('donde esta') || text.includes('mi pedido') || text.includes('cuando llega') || text.includes('estado') || text.includes('pedido')) {
             if (session.cart.length > 0) {
                 const lista = session.cart.map(p => `${p.cantidad || 1}x ${p.nombre}`).join('\n');
@@ -64,7 +64,7 @@ export const receiveMessage = async (req, res) => {
             return res.sendStatus(200);
         }
 
-        // 3️⃣ INICIO NORMAL
+        // 3️⃣ INICIO NORMAL (TEXTO)
         if (text.includes('hola') || text.includes('menu') || session.step === 'start') {
             await enviarBienvenida(from);
             session.step = 'menu';
@@ -94,24 +94,46 @@ export const receiveMessage = async (req, res) => {
                 session.step = 'name';
             }
         }
+        
+        // 5️⃣ LÓGICA DE IA PARA PEDIDOS EN TEXTO LIBRE
+        else if (text && session.step !== 'name' && session.step !== 'address' && !isButton) {
+            
+            logger.info(`Analizando texto libre con IA: ${text}`);
+            const itemsAñadir = await analizarPedidoConIA(text);
 
-        // 5️⃣ PASO DEL NOMBRE (ahora es blindado)
-        else if (session.step === 'name') {
+            if (itemsAñadir.length > 0) {
+                // El handler mejorado se encarga de añadir y notificar al usuario
+                const added = await agregarItemsIAAlCarrito(from, itemsAñadir, session);
+                // Si se añadió algo, el handler ya notificó, solo hacemos return.
+                if (added.length > 0) {
+                    await updateUserSession(from, session);
+                    return res.sendStatus(200);
+                }
+            } 
+            
+            // Si la IA no encontró nada O si el handler no pudo añadir nada, cae al mensaje por defecto.
+            await enviarTexto(from, "Continuamos con tu pedido. ¿Algo más?\n\nEscribe *dónde está mi pedido* para ver el resumen o *menú* para ver las opciones.");
+        }
+
+
+        // 6️⃣ PASO DEL NOMBRE (blindado)
+        else if (session.step === 'name' && text) {
             session.name = message.text.body.trim();
             await enviarTexto(from, `Perfecto *${session.name}*!\n\nDirección de entrega (calle, número, colonia):`);
             session.step = 'address';
         }
 
-        // 6️⃣ PASO DE LA DIRECCIÓN (blindado también)
-        else if (session.step === 'address') {
+        // 7️⃣ PASO DE LA DIRECCIÓN (blindado)
+        else if (session.step === 'address' && text) {
             session.address = message.text.body.trim();
             await enviarConfirmacionFinal(from, session);
+            // IMPORTANTE: Si vas a guardar el pedido aquí, ¡debes hacerlo antes de resetear la sesión!
             session = { step: 'start', cart: [] }; // reset después de confirmar
         }
-
-        // 7️⃣ CUALQUIER OTRA COSA → no pierde el carrito
+        
+        // 8️⃣ CUALQUIER OTRA COSA (incluye mensajes sin texto en un paso sin interacción)
         else {
-            await enviarTexto(from, "Continuamos con tu pedido. ¿Algo más?\n\nEscribe *dónde está mi pedido* para ver el resumen");
+             await enviarTexto(from, "Continuamos con tu pedido. ¿Algo más?\n\nEscribe *dónde está mi pedido* para ver el resumen o *menú* para ver las opciones.");
         }
 
         await updateUserSession(from, session);
