@@ -1,5 +1,3 @@
-// src/handlers/flowHandler.js - CÓDIGO FINAL CORREGIDO Y COMPLETO
-
 import axios from 'axios';
 import mongoose from 'mongoose'; 
 import { getMenu } from '../services/menuService.js';
@@ -9,6 +7,13 @@ import MenuItem from '../models/MenuItem.js';
 import Pedido from '../models/Pedido.js';   
 import { updateUserSession, deleteUserSession } from '../services/sessionService.js';
 
+// 🛑 CONFIGURACIÓN CENTRAL DE MÉTODOS DE PAGO 🛑
+// Define qué métodos acepta actualmente el restaurante.
+// Opciones válidas: 'Efectivo', 'Transferencia', 'Tarjeta'
+const METODOS_ACEPTADOS = ['Efectivo', 'Transferencia']; // <-- ¡AJUSTA ESTA LISTA!
+
+
+// Usar variables de entorno para el token y phone ID
 const TOKEN = process.env.WHATSAPP_TOKEN?.trim();
 const PHONE_ID = process.env.WHATSAPP_PHONE_ID?.trim();
 
@@ -23,6 +28,7 @@ const enviarMensaje = async (to, message) => {
         }, { headers: { Authorization: `Bearer ${TOKEN}` } });
         logger.info(`Mensaje enviado a ${to}`);
     } catch (error) {
+        // Aseguramos que el error se loguee completamente
         logger.error('Error enviando mensaje:', error.response?.data || error.message);
     }
 };
@@ -30,6 +36,7 @@ const enviarMensaje = async (to, message) => {
 const enviarTexto = async (to, texto) => {
     await enviarMensaje(to, { type: "text", text: { body: texto } });
 };
+
 // ===============================================
 
 /**
@@ -43,7 +50,6 @@ async function agregarItemsIAAlCarrito(from, itemsAñadir, session) {
         const cantidad = Math.max(1, parseInt(item.cantidad, 10) || 1); 
 
         try {
-            // Usamos findById que acepta el string ID
             const menu = await MenuItem.findById(itemId);
 
             if (!menu) {
@@ -53,12 +59,8 @@ async function agregarItemsIAAlCarrito(from, itemsAñadir, session) {
 
             // Lógica de STOCK
             const disponible = menu.cantidad_diaria - menu.vendidas_hoy;
-            
-            // 🛑 CORRECCIÓN CRÍTICA: Buscar usando item.itemId si existe, o _id.
-            // Esto asegura que podemos encontrar ítems agregados por IA o por botón.
             const itemKey = menu._id.toString(); 
             const existente = session.cart.find(p => (p.itemId || p._id)?.toString() === itemKey);
-            
             const cantidadEnCarrito = existente ? existente.cantidad : 0;
             
             if (cantidadEnCarrito + cantidad > disponible) {
@@ -68,7 +70,6 @@ async function agregarItemsIAAlCarrito(from, itemsAñadir, session) {
             
             // Si pasa la verificación, lo agrega al carrito
             session.cart.push({
-                // Usamos itemId consistentemente para la clave del carrito
                 itemId: menu._id.toString(), 
                 nombre: menu.nombre,
                 precio: menu.precio,
@@ -97,7 +98,7 @@ async function agregarItemsIAAlCarrito(from, itemsAñadir, session) {
 }
 
 
-// === HANDLERS DE MENSAJES (El resto del flow es el mismo, solo se muestra la confirmación final por ser crítica) ===
+// === HANDLERS DE MENSAJES ===
 
 const enviarBienvenida = async (to) => { 
     await enviarMensaje(to, {
@@ -200,7 +201,6 @@ const agregarAlCarrito = async (to, itemId, session) => {
 
     // Lógica de VERIFICACIÓN DE STOCK
     const disponible = item.cantidad_diaria - item.vendidas_hoy;
-    // 🛑 CORRECCIÓN: Usar p.itemId para consistencia 🛑
     const existente = session.cart.find(p => (p.itemId || p._id)?.toString() === itemId);
     const cantidadEnCarrito = existente ? existente.cantidad : 0;
     
@@ -236,21 +236,97 @@ const enviarBotonFinalizar = async (to) => {
 
 const enviarResumen = async (to, session) => {
     let texto = "*RESUMEN DE TU PEDIDO*\n\n";
-    let total = 0;
+    let subtotal = 0; 
+    const costoEnvio = 3000;
+    
     session.cart.forEach(p => {
-        const subtotal = p.precio * p.cantidad / 100;
+        subtotal += p.precio * p.cantidad; 
         texto += `• ${p.cantidad}x *${p.nombre}* - ${formatPrice(p.precio * p.cantidad)}\n`;
-        total += subtotal;
     });
-    texto += `\n*Subtotal:* ${formatPrice(total*100)}\n*Envío:* $30.00\n*TOTAL:* ${formatPrice((total*100)+3000)}`;
+    
+    const total = subtotal + costoEnvio;
+
+    texto += `\n*Subtotal:* ${formatPrice(subtotal)}\n*Envío:* ${formatPrice(costoEnvio)}\n*TOTAL:* ${formatPrice(total)}`;
     await enviarTexto(to, texto);
+    
+    // Este mensaje hace la transición a pedir el nombre en el webhook
     await enviarTexto(to, "\n¿Cuál es tu nombre para el pedido?");
 };
 
+// 🛑 FUNCIÓN enviarMetodoPago MODIFICADA 🛑
+const enviarMetodoPago = async (to, session) => {
+    const subtotal = session.cart.reduce((s, i) => s + i.precio * i.cantidad, 0);
+    const total = subtotal + 3000;
+    
+    // 1. Definir todos los botones posibles con su método asociado
+    const ALL_BUTTONS_CONFIG = [
+        { id: 'PAY_CASH', title: '💵 Efectivo', method: 'Efectivo' },
+        { id: 'PAY_TRANSFER', title: '🏦 Transferencia', method: 'Transferencia' },
+        { id: 'PAY_CARD', title: '💳 Tarjeta', method: 'Tarjeta' },
+    ];
+
+    // 2. Filtrar los botones basados en la lista de METODOS_ACEPTADOS
+    const buttons = ALL_BUTTONS_CONFIG
+        // Solo incluimos los métodos que están en nuestra lista de aceptación
+        .filter(b => METODOS_ACEPTADOS.includes(b.method))
+        // Mapeamos al formato que espera la API de WhatsApp
+        .map(b => ({ type: 'reply', reply: { id: b.id, title: b.title } }));
+
+    if (buttons.length === 0) {
+        // Esto es un fallback de seguridad si la lista METODOS_ACEPTADOS está vacía
+        await enviarTexto(to, "Lo siento, no tenemos métodos de pago habilitados en este momento.");
+        return;
+    }
+
+    await enviarTexto(to, 
+        `El total es *${formatPrice(total)}* (incluye envío).\n\n¿Cómo deseas pagar?`
+    );
+    await enviarMensaje(to, {
+        type: 'interactive',
+        interactive: {
+            type: 'button',
+            body: { text: 'Selecciona una opción:' },
+            action: {
+                buttons: buttons, // Usamos la lista de botones filtrada
+            },
+        },
+    });
+};
+
+// 🛑 FUNCIÓN MODIFICADA 🛑
 const enviarConfirmacionFinal = async (to, session) => {
+    
+    // --- CONSTANTES DE PAGO (MODIFICA ESTO SEGÚN TUS DATOS REALES) ---
+    const BANK_NAME = 'HSBC MEXICO';
+    const CLABE = '012345678901234567';
+    const ACCOUNT_HOLDER = 'Hamburguesas El Pastor';
+    const COMMISSION_RATE = 0.05; // 5%
+    // -----------------------------------------------------------------
+
     const subtotal = session.cart.reduce((s, i) => s + i.precio * i.cantidad, 0);
     const costoEnvio = 3000;
-    const total = subtotal + costoEnvio;
+    let totalBase = subtotal + costoEnvio;
+    let totalConComision = totalBase;
+    let commissionMessage = '';
+    let paymentDetails = '';
+
+    // 1. Lógica de cálculo de comisión
+    if (session.paymentMethod === 'Tarjeta') {
+        const comision = totalBase * COMMISSION_RATE;
+        totalConComision = totalBase + comision;
+        // Creamos el mensaje de comisión
+        commissionMessage = `\n*NOTA:* Se aplica una comisión del 5% (${formatPrice(comision)}) por pago con Tarjeta.`;
+    } 
+    
+    // 2. Lógica de datos de transferencia
+    if (session.paymentMethod === 'Transferencia') {
+        paymentDetails = `
+*DATOS PARA TRANSFERENCIA:*
+Banco: ${BANK_NAME}
+CLABE: ${CLABE}
+Nombre: ${ACCOUNT_HOLDER}
+*Favor de enviar comprobante al agente.*`;
+    }
 
     try {
         const nuevoPedido = await Pedido.create({
@@ -258,8 +334,7 @@ const enviarConfirmacionFinal = async (to, session) => {
             nombreCliente: session.name || 'Cliente sin nombre',
             direccionEntrega: session.address || 'Sin dirección',
             items: session.cart.map(i => ({
-                // 🛑 CORRECTO: Convertir el string ID a un ObjectId de Mongoose 🛑
-                itemId: new mongoose.Types.ObjectId(i.itemId), 
+                itemId: mongoose.Types.ObjectId.createFromHexString(i.itemId),
                 nombre: i.nombre,
                 precioUnitario: i.precio,
                 cantidad: i.cantidad,
@@ -267,8 +342,9 @@ const enviarConfirmacionFinal = async (to, session) => {
             })),
             subtotal,
             costoEnvio,
-            total,
-            metodoPago: 'Efectivo',
+            // 🛑 GUARDAMOS EL TOTAL CON COMISIÓN EN LA BASE DE DATOS 🛑
+            total: totalConComision, 
+            metodoPago: session.paymentMethod || 'Efectivo', 
             estado: 'Pendiente'
         });
 
@@ -281,7 +357,7 @@ const enviarConfirmacionFinal = async (to, session) => {
         const lista = session.cart.map(p => `${p.cantidad}x ${p.nombre}`).join('\n');
         
         await enviarTexto(to, `
-✅ ¡PEDIDO NÚMERO *#${nuevoPedido._id.toString().slice(-6)}* CONFIRMADO! ✅
+✅ ¡PEDIDO NÚMERO *#${nuevoPedido.numero_pedido}* CONFIRMADO! ✅ 
 
 *Nombre:* ${session.name}
 *Dirección:* ${session.address}
@@ -289,7 +365,13 @@ const enviarConfirmacionFinal = async (to, session) => {
 *Productos:*
 ${lista}
 
-*Total:* ${formatPrice(total)}
+*Subtotal:* ${formatPrice(subtotal)}
+*Envío:* ${formatPrice(costoEnvio)}
+${commissionMessage}
+*TOTAL A PAGAR:* ${formatPrice(totalConComision)}
+
+*Método de Pago:* ${session.paymentMethod}
+${paymentDetails}
 
 Un agente te contactará para confirmar el pago y el tiempo de entrega.
         `);
@@ -312,5 +394,6 @@ export {
     enviarResumen,
     enviarConfirmacionFinal,
     enviarTexto,
-    enviarMensaje
+    enviarMensaje,
+    enviarMetodoPago
 };

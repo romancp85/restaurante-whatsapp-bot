@@ -22,6 +22,7 @@
     "express": "^4.21.1",
     "ioredis": "^5.8.2",
     "mongoose": "^8.7.2",
+    "mongoose-sequence": "^6.0.1",
     "openai": "^6.10.0",
     "winston": "^3.18.3"
   },
