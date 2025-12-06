@@ -1,0 +1,10 @@
+# Directorios de Node.js y Logs
+/node_modules
+/dist
+/tmp
+npm-debug.log*
+yarn-debug.log*
+
+# Archivos de Entorno de Desarrollo y Secretos
+.env
+.DS_Store
