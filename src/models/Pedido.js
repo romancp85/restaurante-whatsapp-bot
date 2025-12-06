@@ -1,5 +1,6 @@
-// src/models/Pedido.js
+// src/models/Pedido.js - CÓDIGO FINAL CORREGIDO
 import mongoose from 'mongoose';
+import autoIncrement from 'mongoose-sequence';
 
 // 1. Esquema para los ítems dentro del carrito
 const itemPedidoSchema = new mongoose.Schema({
@@ -7,6 +8,7 @@ const itemPedidoSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId, 
         required: true 
     },
+    // ❌ CAMPO 'numero_pedido' ELIMINADO DE AQUÍ ❌
     nombre: { 
         type: String, 
         required: true 
@@ -21,21 +23,23 @@ const itemPedidoSchema = new mongoose.Schema({
         required: true, 
         min: 1 
     },
-    // Opcional: para pedidos complejos (ej. sin cebolla, extra queso)
     notas: { 
         type: String, 
         default: '' 
     }
-}, { _id: false }); // No necesitamos un ID de MongoDB para cada sub-documento
+}, { _id: false });
+
+// Inicializamos el plugin de secuencia
+const AutoIncrement = autoIncrement(mongoose);
 
 // 2. Esquema Principal del Pedido
 const pedidoSchema = new mongoose.Schema({
-    // === Datos del Cliente (Recopilados en la sesión) ===
+    // === Datos del Cliente ===
     telefonoCliente: {
         type: String,
         required: true,
         trim: true,
-        index: true // Útil para búsquedas rápidas por teléfono
+        index: true
     },
     nombreCliente: {
         type: String,
@@ -59,7 +63,7 @@ const pedidoSchema = new mongoose.Schema({
     costoEnvio: {
         type: Number,
         required: true,
-        default: 3000 // Ej: $30.00 MXN en centavos
+        default: 3000
     },
     total: {
         type: Number,
@@ -82,8 +86,14 @@ const pedidoSchema = new mongoose.Schema({
     // === Metadatos ===
     clienteId: {
         type: String,
-        default: 'default' // Para soportar múltiples restaurantes en el futuro
+        default: 'default'
     }
-}, { timestamps: true }); // Mongoose añade createdAt y updatedAt automáticamente
+}, { timestamps: true });
+
+// 🛑 APLICAR EL PLUGIN AL ESQUEMA PRINCIPAL (AQUÍ ESTÁ CORRECTO)
+pedidoSchema.plugin(AutoIncrement, {
+    inc_field: 'numero_pedido', // Nombre del campo que será auto-incremental
+    start_seq: 1000            // Número inicial (empezará en 1000, ajustado desde 100)
+});
 
 export default mongoose.model('Pedido', pedidoSchema);

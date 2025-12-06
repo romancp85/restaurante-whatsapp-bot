@@ -74,6 +74,7 @@ mongoose.connect(process.env.MONGODB_URI)
   .then(async () => { 
     console.log('MongoDB conectado - ¡Base de datos lista!');
     
+
     // 1. Ejecutar la creación de la DB
     await crearMenuInicial();
     await crearConfiguracionInicial();
