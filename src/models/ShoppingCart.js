@@ -1,64 +1,60 @@
-// src/models/ShoppingCart.js
-
 import mongoose from 'mongoose';
 
-// Esquema para los ítems dentro del carrito (similar al de Pedido, pero más simple)
-const cartItemSchema = new mongoose.Schema({
-    itemId: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'MenuItem', // Referencia al modelo de Menú
-        required: true 
-    },
-    nombre: { 
-        type: String, 
-        required: true 
-    },
-    precioUnitario: { 
-        type: Number, 
-        required: true, 
-        min: 0 
-    }, // Precio en centavos
-    cantidad: { 
-        type: Number, 
-        required: true, 
-        min: 1 
-    },
-    notas: { 
-        type: String, 
-        default: '' 
-    }
-}, { _id: false });
+// Esquema de los ítems dentro del carrito
+const itemSchema = new mongoose.Schema({
+    itemId: { type: mongoose.Schema.Types.ObjectId, required: true },
+    nombre: { type: String, required: true },
+    precioUnitario: { type: Number, required: true }, // Precio en centavos
+    cantidad: { type: Number, required: true, min: 1 },
+    notas: { type: String, default: '' },
+});
 
 // Esquema Principal del Carrito
 const shoppingCartSchema = new mongoose.Schema({
-    // Identificador único para cada conversación de WhatsApp
     clientPhone: {
         type: String,
         required: true,
-        unique: true, // Solo puede haber un carrito activo por cliente
-        index: true
+        unique: true,
     },
-    // Array de ítems
-    items: [cartItemSchema],
-    
-    // Estado de la conversación (para saber dónde está el cliente en el flujo)
+    items: [itemSchema],
     conversationState: {
         type: String,
-        enum: ['INICIO', 'MOSTRANDO_MENU', 'SELECCIONANDO_ITEM', 'PREGUNTANDO_CANTIDAD', 'EN_CARRITO', 'PREGUNTANDO_DIRECCION', 'CONFIRMANDO_PEDIDO'],
+        enum: [
+            'INICIO',
+            'EMPEZAR',
+            'MOSTRANDO_MENU',
+            'PREGUNTANDO_CANTIDAD',
+            'EN_CARRITO',
+            'PREGUNTANDO_NOMBRE',
+            'PREGUNTANDO_DIRECCION',
+            'PREGUNTANDO_PAGO',
+            'CONFIRMANDO_PEDIDO',
+            'ESPERANDO_AGENTE'
+        ],
         default: 'INICIO'
     },
-    
-    // Almacena datos temporales (ej: el ID del ítem que acaba de seleccionar)
+    // Objeto temporal para guardar IDs de menú o datos del checkout
     tempData: {
-        type: mongoose.Schema.Types.Mixed // Puede ser cualquier tipo de objeto
-    },
-    
-    // Última actividad (para limpiar carritos inactivos)
-    lastActivity: {
-        type: Date,
-        default: Date.now
+        type: Object,
+        default: {}
     }
-}, { timestamps: true });
+}, { 
+    timestamps: true // Esto añade automáticamente 'createdAt' y 'updatedAt'
+});
 
 
-export default mongoose.model('ShoppingCart', shoppingCartSchema);
+// ----------------------------------------------------
+// 🛑 LÓGICA DE CADUCIDAD AUTOMÁTICA (TTL) 🛑
+// ----------------------------------------------------
+
+// Configuramos un índice TTL en el campo 'updatedAt'.
+// 2 horas = 7200 segundos (60 segundos * 60 minutos * 2 horas).
+// Si el cliente no interactúa con el carrito en 2 horas, MongoDB lo borrará.
+shoppingCartSchema.index({ "updatedAt": 1 }, { expireAfterSeconds: 600 }); 
+
+// ----------------------------------------------------
+
+
+const ShoppingCart = mongoose.model('ShoppingCart', shoppingCartSchema);
+
+export default ShoppingCart;

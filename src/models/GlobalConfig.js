@@ -2,33 +2,39 @@
 
 import mongoose from 'mongoose';
 
-const GlobalConfigSchema = new mongoose.Schema({
-    // Usamos un identificador fijo para asegurar que solo haya un documento de configuración
-    // (Ej: 'MAIN_CONFIG', 'RESTAURANT_1', etc.)
+const globalConfigSchema = new mongoose.Schema({
     clientId: {
         type: String,
         required: true,
         unique: true,
-        default: 'GLOBAL_RESTAURANT'
+        default: 'GLOBAL_RESTAURANT' // ID único para el documento de configuración
     },
-    
-    // Lista de métodos de pago aceptados por el restaurante
-    acceptedPaymentMethods: {
-        type: [String], // Array de strings
-        default: ['Efectivo', 'Transferencia'],
-        // Enum opcional para forzar la validación en la DB
-        enum: ['Efectivo', 'Transferencia', 'Tarjeta']
+    // Estado de horarios de atención (ya debe existir)
+    isBusinessOpen: {
+        type: Boolean,
+        default: true
     },
-    
-    // Mensaje que se envía al cliente cuando está cerrado
+    // Mensaje a enviar si el negocio está cerrado (ya debe existir)
     closedMessage: {
         type: String,
-        default: "¡Hola! Nuestro horario de atención es limitado. Estamos cerrados ahora mismo."
+        default: "Lo sentimos, estamos cerrados. Nuestro horario de atención es..."
     },
-
-    // Aquí puedes añadir variables sensibles del .env para control administrativo
-    // Ejemplo: Whatsapp Phone ID, etc.
-
+    // 🛑 NUEVO CAMPO: Costo de Envío 🛑
+    costoEnvioCents: {
+        type: Number,
+        default: 3000, // $30.00 pesos/dólares en centavos (ejemplo)
+        min: 0
+    },
+    // Campo para guardar la plantilla de datos de transferencia (ya debe existir)
+    transferDetailsMessage: {
+        type: String,
+        default: "CLABE: 0123456789\nBanco: XYZ\nBeneficiario: Nombre de la Empresa"
+    },
+    // Métodos de pago aceptados (ya debe existir)
+    acceptedPaymentMethods: {
+        type: [String],
+        default: ['Efectivo', 'Tarjeta', 'Transferencia']
+    }
 }, { timestamps: true });
 
-export default mongoose.model('GlobalConfig', GlobalConfigSchema);
+export default mongoose.model('GlobalConfig', globalConfigSchema);
