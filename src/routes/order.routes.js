@@ -1,19 +1,18 @@
-// src/routes/order.routes.js - CÓDIGO FINAL DE RUTAS
+// src/routes/order.routes.js
 
 import express from 'express';
-import orderController from '../controllers/order.controller.js';
+// 🛑 IMPORTAR LAS NUEVAS FUNCIONES DESDE EL CONTROLADOR DE ÓRDENES 🛑
+import { 
+    getActiveOrders, 
+    updateOrderStatus 
+} from '../controllers/order.controller.js'; // Ajusta el nombre si tu controlador es 'pedido.controller.js'
 
 const router = express.Router();
 
-// Rutas para la gestión de pedidos
-router.route('/orders')
-    .get(orderController.getOrders);
+// 1. Obtener todos los pedidos activos para el panel
+router.get('/', getActiveOrders); // GET /api/pedidos
 
-router.route('/orders/:id')
-    .get(orderController.getOrderById);
-    
-router.route('/orders/:id/status')
-    .put(orderController.updateOrderStatus);
+// 2. Actualizar el estado de un pedido (ej: pasar de Pendiente a Confirmado)
+router.put('/:id/status', updateOrderStatus); // PUT /api/pedidos/:id/status
 
-// 🛑 EXPORTACIÓN DEFINITIVA Y CLARA 🛑
 export default router;
