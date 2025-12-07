@@ -4,62 +4,58 @@ import ShoppingCart from '../models/ShoppingCart.js';
 import MenuItem from '../models/MenuItem.js';
 import logger from '../utils/logger.js';
 
-// Estado inicial de la conversación
-const INITIAL_STATE = 'INICIO';
-
 /**
- * Obtiene el carrito de compras del cliente o crea uno nuevo si no existe.
- * @param {string} phone - Número de teléfono del cliente.
- * @returns {object} El objeto ShoppingCart.
+ * Obtiene o crea el carrito de compras para un número de teléfono.
+ * @param {string} clientPhone - Número de teléfono del cliente.
+ * @returns {Promise<ShoppingCart>} El carrito de compras.
  */
-export const getOrCreateCart = async (phone) => {
-    try {
-        let cart = await ShoppingCart.findOne({ clientPhone: phone });
-        
-        if (!cart) {
-            cart = await ShoppingCart.create({
-                clientPhone: phone,
-                conversationState: INITIAL_STATE,
-                items: [],
-                tempData: {}
-            });
-            logger.info(`Nuevo carrito creado para: ${phone}`);
-        } else {
-            // Actualizar solo la actividad
-            cart.lastActivity = Date.now();
-            await cart.save();
-        }
-        return cart;
-    } catch (error) {
-        logger.error(`Error en getOrCreateCart para ${phone}:`, error);
-        return { clientPhone: phone, conversationState: 'ERROR', items: [], tempData: {} };
+export const getOrCreateCart = async (clientPhone) => {
+    let cart = await ShoppingCart.findOne({ clientPhone });
+
+    if (!cart) {
+        cart = new ShoppingCart({ clientPhone });
+        await cart.save();
+        logger.info(`Nuevo carrito creado para ${clientPhone}`);
     }
+    return cart;
 };
 
 /**
- * Actualiza el estado y los datos temporales del carrito.
- * @param {string} phone - Número de teléfono del cliente.
- * @param {object} updates - Objeto con los campos a actualizar (ej: { conversationState: 'NUEVO_ESTADO', items: [...] }).
+ * Actualiza el carrito con nuevos datos y guarda el estado de la conversación.
+ * @param {string} clientPhone - Número de teléfono del cliente.
+ * @param {object} updates - Objeto con los campos a actualizar.
+ * @returns {Promise<ShoppingCart>} El carrito actualizado.
  */
-export const updateCart = async (phone, updates) => {
-    try {
-        const result = await ShoppingCart.findOneAndUpdate(
-            { clientPhone: phone },
-            { $set: { ...updates, lastActivity: Date.now() } },
-            { new: true, upsert: false }
-        );
-        return result;
-    } catch (error) {
-        logger.error(`Error en updateCart para ${phone}:`, error);
+export const updateCart = async (clientPhone, updates) => {
+    const cart = await getOrCreateCart(clientPhone);
+    // Aplicar la última actividad antes de cualquier actualización
+    updates.lastActivity = Date.now();
+    
+    // Si se proporciona conversationState, actualizarlo
+    if (updates.conversationState) {
+        cart.conversationState = updates.conversationState;
     }
+
+    // Si se proporciona tempData, fusionarlo
+    if (updates.tempData) {
+        // Asegurarse de que tempData sea un objeto antes de fusionar
+        cart.tempData = { ...cart.tempData, ...updates.tempData };
+    }
+    
+    // Para otros campos como items, se deben manejar directamente en el objeto cart antes de llamar a save.
+    
+    await cart.save();
+    return cart;
 };
 
+
 /**
- * Agrega un ítem al carrito de forma simple (usado en lógica de IA o selección final).
- * @param {object} cart - El objeto de carrito actual.
- * @param {string} itemId - ID de Mongoose del MenuItem.
- * @param {number} quantity - Cantidad a agregar.
- * @param {string} [notes=''] - Notas opcionales.
+ * Añade un ítem al carrito o incrementa la cantidad si ya existe.
+ * @param {object} cart - El objeto ShoppingCart actual.
+ * @param {string} itemId - ID del producto.
+ * @param {number} quantity - Cantidad a añadir.
+ * @param {string} notes - Notas o especificaciones para el ítem.
+ * @returns {Promise<ShoppingCart|null>} El carrito actualizado o null si el ítem no existe.
  */
 export const addItemToCart = async (cart, itemId, quantity, notes = '') => {
     const itemData = await MenuItem.findById(itemId);
@@ -68,12 +64,15 @@ export const addItemToCart = async (cart, itemId, quantity, notes = '') => {
         logger.warn(`Intento de añadir ítem no encontrado: ${itemId}`);
         return null;
     }
+    
+    // 🛑 CORRECCIÓN: Si quantity no es un número válido, se establece a 1 (para la IA) 🛑
+    const finalQuantity = parseInt(quantity) > 0 ? parseInt(quantity) : 1; 
 
     const newItem = {
         itemId: itemData._id,
         nombre: itemData.nombre,
         precioUnitario: itemData.precio,
-        cantidad: quantity,
+        cantidad: finalQuantity, 
         notas: notes,
     };
 
@@ -83,15 +82,34 @@ export const addItemToCart = async (cart, itemId, quantity, notes = '') => {
     );
 
     if (existingItemIndex > -1) {
-        // Si existe y tiene las mismas notas, solo aumentamos la cantidad
-        cart.items[existingItemIndex].cantidad += quantity;
+        // Si existe, aumentamos la cantidad
+        cart.items[existingItemIndex].cantidad += finalQuantity;
     } else {
         // Si es nuevo, lo agregamos
         cart.items.push(newItem);
     }
     
-    // Actualizamos la actividad y guardamos
     cart.lastActivity = Date.now();
     await cart.save();
+    return cart;
+};
+
+
+/**
+ * Elimina un ítem del carrito por su índice (basado en el índice 1 del usuario).
+ * @param {object} cart - El objeto ShoppingCart actual.
+ * @param {number} itemIndex - El índice basado en 1 (del 1 al N) a eliminar.
+ * @returns {Promise<ShoppingCart>} El carrito actualizado.
+ */
+export const removeItemFromCart = async (cart, itemIndex) => {
+    const indexToRemove = itemIndex - 1; // Convertir índice de usuario a índice de array (base 0)
+
+    if (indexToRemove >= 0 && indexToRemove < cart.items.length) {
+        const removedItem = cart.items.splice(indexToRemove, 1);
+        logger.info(`Ítem eliminado del carrito: ${removedItem[0].nombre}`);
+        
+        cart.lastActivity = Date.now();
+        await cart.save();
+    }
     return cart;
 };

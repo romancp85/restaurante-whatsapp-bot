@@ -1,19 +1,21 @@
-// src/whatsapp/utils.js - VERSIÓN COMPLETA CON LECTURA DE CONFIGURACIÓN DINÁMICA
+// src/whatsapp/utils.js - VERSIÓN COMPLETA Y CORREGIDA PARA LECTURA DE COSTO DINÁMICO
 
 import axios from 'axios';
 import MenuItem from '../models/MenuItem.js';
 import logger from '../utils/logger.js';
 import dotenv from 'dotenv';
 import { updateCart } from './cartUtils.js'; 
-import { getAcceptedPaymentMethods } from '../services/paymentService.js'; // ⬅️ NUEVO SERVICIO
+import { getAcceptedPaymentMethods } from '../services/paymentService.js'; 
+// 🛑 NUEVA IMPORTACIÓN PARA EL COSTO DE ENVÍO DINÁMICO 🛑
+import { getGlobalConfig } from '../services/configServiceDB.js'; 
 
 dotenv.config();
 
-// 🛑 USAMOS TUS NOMBRES DE VARIABLES DE ENTORNO 🛑
 const WABA_TOKEN = process.env.WHATSAPP_TOKEN;      
 const WABA_ID = process.env.WHATSAPP_PHONE_ID;      
 
 const API_URL = `https://graph.facebook.com/v19.0/${WABA_ID}/messages`;
+const FALLBACK_DELIVERY_COST = 3000; // Costo de envío de emergencia en centavos
 
 /**
  * Utilidad simple para formatear precios.
@@ -22,6 +24,25 @@ const API_URL = `https://graph.facebook.com/v19.0/${WABA_ID}/messages`;
  */
 const formatPrice = (priceInCents) => {
     return `$${(priceInCents / 100).toFixed(2)}`;
+};
+
+/**
+ * Función auxiliar para obtener el costo de envío del documento global.
+ */
+const getDeliveryCost = async () => {
+    try {
+        const config = await getGlobalConfig();
+        // Asumiendo que el campo es 'costoEnvioCents'
+        const cost = config.costoEnvioCents; 
+        
+        if (typeof cost === 'number' && cost >= 0) {
+            return cost;
+        }
+        return FALLBACK_DELIVERY_COST;
+    } catch (error) {
+        logger.error("Error al obtener costo de envío para resumen. Usando fallback.", error);
+        return FALLBACK_DELIVERY_COST;
+    }
 };
 
 /**
@@ -116,8 +137,8 @@ export const sendCartSummary = async (to, cart) => {
     let summaryText = "*🛒 Tu Carrito Actual:*\n\n";
     let subtotal = 0;
     
-    // Aquí deberías integrar la lectura dinámica del COSTO_ENVIO, pero por ahora usamos un default:
-    const COSTO_ENVIO = 3000; 
+    // 🛑 LECTURA DINÁMICA APLICADA AQUÍ 🛑
+    const costoEnvio = await getDeliveryCost(); 
 
     cart.items.forEach((item, index) => {
         const totalItemPrice = item.precioUnitario * item.cantidad;
@@ -130,11 +151,12 @@ export const sendCartSummary = async (to, cart) => {
         }
     });
     
-    const total = subtotal + COSTO_ENVIO;
+    const total = subtotal + costoEnvio;
 
     summaryText += "\n*--- Resumen ---\n*";
     summaryText += `Subtotal: ${formatPrice(subtotal)}\n`;
-    summaryText += `Costo de Envío: ${formatPrice(COSTO_ENVIO)}\n`;
+    // 🛑 USANDO EL VALOR DINÁMICO 🛑
+    summaryText += `Costo de Envío: ${formatPrice(costoEnvio)}\n`; 
     summaryText += `*Total a Pagar: ${formatPrice(total)}*\n`;
     
     summaryText += "\n\n*Opciones:*\n👉 *FINALIZAR*: Ir a checkout.\n👉 *MENÚ*: Agregar más productos.\n👉 *QUITAR [X]*: Eliminar el ítem por su número (ej: *QUITAR 1*).";
@@ -149,7 +171,6 @@ export const sendCartSummary = async (to, cart) => {
  */
 export const sendPaymentMethodOptions = async (to) => {
     try {
-        // 🛑 LECTURA DINÁMICA: Usamos el servicio de pago para obtener los métodos 🛑
         const acceptedMethods = await getAcceptedPaymentMethods();
         
         if (acceptedMethods.length === 0) {
@@ -160,9 +181,8 @@ export const sendPaymentMethodOptions = async (to) => {
         const buttons = acceptedMethods.map(method => ({
             type: "reply",
             reply: {
-                // El ID que se enviará al webhook será: PAYMENT_EFECTIVO
                 id: `PAYMENT_${method.toUpperCase().replace(/\s/g, '_')}`, 
-                title: method // El texto visible en el botón (Efectivo)
+                title: method 
             }
         }));
 

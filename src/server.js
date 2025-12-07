@@ -3,6 +3,7 @@
 import 'dotenv/config';
 
 // === CONFIGURACIÓN BASE ===
+// Asegurar que la zona horaria del proceso se mantenga si está definida
 if (process.env.TZ) {
     process.env.TZ = process.env.TZ;
 }
@@ -14,16 +15,17 @@ import logger from './utils/logger.js';
 // ==========================================================
 
 // === IMPORTACIONES DE MODELOS ===
-import Configuracion from './models/Configuracion.js'; // Horarios
-import MenuItem from './models/MenuItem.js'; // Menú
-import GlobalConfig from './models/GlobalConfig.js'; // ⬅️ Configuración Global (Pagos/Mensajes)
+import Configuracion from './models/Configuracion.js';
+import MenuItem from './models/MenuItem.js'; 
+import GlobalConfig from './models/GlobalConfig.js'; 
+// ==========================================================
 
-// === IMPORTACIONES DE RUTAS ===
-// Nota: Las importaciones deben coincidir con tu convención de nombres (.routes.js)
+// === IMPORTACIONES DE RUTAS Y WEBHOOK ===
 import menuRoutes from './routes/menu.routes.js';
 import orderRoutes from './routes/order.routes.js';
-import configRouter from './routes/config.routes.js'; // ⬅️ IMPORTACIÓN CORREGIDA A .routes.js
-import { verifyWebhook, receiveMessage } from './whatsapp/webhook.js'; 
+import configRouter from './routes/config.routes.js';
+// 🛑 CORRECCIÓN CRÍTICA: Importamos el router completo como default 🛑
+import webhookRouter from './whatsapp/webhook.js'; 
 // ==========================================================
 
 // === App y puerto ===
@@ -37,15 +39,18 @@ app.use(cors());
 logger.info(`[VERIFICACIÓN ZONA HORARIA] Hora local actual del proceso: ${new Date().toLocaleString()}`);
 
 
-// === FUNCIONES DE INICIALIZACIÓN ===
+// === FUNCIONES DE INICIALIZACIÓN (Utilizando el modelo GlobalConfig proporcionado) ===
 
 async function crearGlobalConfigInicial() {
     const count = await GlobalConfig.countDocuments({ clientId: 'GLOBAL_RESTAURANT' });
     if (count === 0) {
+        // Aseguramos que el costo de envío exista para la nueva lógica
         await GlobalConfig.create({
             clientId: 'GLOBAL_RESTAURANT',
-            acceptedPaymentMethods: ['Efectivo', 'Transferencia'], 
-            closedMessage: '¡Hola! Nuestro horario de atención es limitado. Estamos cerrados ahora mismo.'
+            acceptedPaymentMethods: ['Efectivo', 'Transferencia', 'Tarjeta'], 
+            closedMessage: '¡Hola! Nuestro horario de atención es limitado. Estamos cerrados ahora mismo.',
+            costoEnvioCents: 3000, // Añadido para la consistencia del servicio
+            transferDetailsMessage: "CLABE: 0123456789. Enviar comprobante al 999 555 1234."
         });
         logger.info('✅ Configuración global de pagos/mensajes inicial creada.');
     }
@@ -58,8 +63,10 @@ async function crearConfiguracionInicial() {
             nombre: 'horarios_operacion',
             dias_operacion: [
                 { dia: 'LUNES', activo: true, turnos: [{ apertura: '12:00', cierre: '22:00' }] },
-                // ... (El resto de tus días de la semana)
-            ]
+                { dia: 'MARTES', activo: true, turnos: [{ apertura: '12:00', cierre: '22:00' }] },
+                // Añade el resto de días
+            ],
+            mensaje_cerrado: 'Estamos cerrados. Vuelve mañana a las 12:00.'
         });
         logger.info('✅ Configuración de horarios inicial creada en MongoDB.');
     }
@@ -70,7 +77,8 @@ async function crearMenuInicial() {
     if (count === 0) {
         await MenuItem.create([
             { nombre: "Hamburguesa Clásica", precio: 5500, cantidad_diaria: 10, alerta_en: 7, categoria: 'HAMBURGUESAS' },
-            // ... (Otros ítems del menú)
+            { nombre: "Papas Fritas", precio: 2000, cantidad_diaria: 25, alerta_en: 5, categoria: 'COMPLEMENTOS' },
+            { nombre: "Coca Cola", precio: 1500, cantidad_diaria: 50, alerta_en: 10, categoria: 'BEBIDAS' },
         ]);
         logger.info('Menú inicial creado con stock diario');
     }
@@ -85,7 +93,7 @@ mongoose.connect(process.env.MONGODB_URI)
     // 1. Ejecutar la creación de la DB
     await crearMenuInicial();
     await crearConfiguracionInicial();
-    await crearGlobalConfigInicial(); // ⬅️ Asegurar que GlobalConfig exista
+    await crearGlobalConfigInicial(); 
 
     // 2. === INTEGRACIÓN DE RUTAS ===
     
@@ -94,9 +102,9 @@ mongoose.connect(process.env.MONGODB_URI)
     app.use('/api/pedidos', orderRoutes); 
     app.use('/api/config', configRouter); 
     
-    // Rutas de WhatsApp (sin prefijo /api)
-    app.get('/webhook', verifyWebhook);
-    app.post('/webhook', receiveMessage); 
+    // 🛑 Rutas de WhatsApp (Integra el router por defecto) 🛑
+    // El router de webhook.js ya contiene app.get('/webhook') y app.post('/webhook')
+    app.use(webhookRouter); 
     
     // RUTA DE PRUEBA
     app.get('/', (req, res) => {
