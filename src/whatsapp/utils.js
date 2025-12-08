@@ -1,4 +1,4 @@
-// src/whatsapp/utils.js - VERSIÓN COMPLETA Y CORREGIDA PARA LECTURA DE COSTO DINÁMICO
+// src/whatsapp/utils.js - VERSIÓN COMPLETA Y CORREGIDA PARA LECTURA DE COSTO DINÁMICO Y FILTRO DE MENÚ
 
 import axios from 'axios';
 import MenuItem from '../models/MenuItem.js';
@@ -6,13 +6,12 @@ import logger from '../utils/logger.js';
 import dotenv from 'dotenv';
 import { updateCart } from './cartUtils.js'; 
 import { getAcceptedPaymentMethods } from '../services/paymentService.js'; 
-// 🛑 NUEVA IMPORTACIÓN PARA EL COSTO DE ENVÍO DINÁMICO 🛑
 import { getGlobalConfig } from '../services/configServiceDB.js'; 
 
 dotenv.config();
 
-const WABA_TOKEN = process.env.WHATSAPP_TOKEN;      
-const WABA_ID = process.env.WHATSAPP_PHONE_ID;      
+const WABA_TOKEN = process.env.WHATSAPP_TOKEN;      
+const WABA_ID = process.env.WHATSAPP_PHONE_ID;      
 
 const API_URL = `https://graph.facebook.com/v19.0/${WABA_ID}/messages`;
 const FALLBACK_DELIVERY_COST = 3000; // Costo de envío de emergencia en centavos
@@ -80,8 +79,12 @@ export const sendMessage = async (to, text) => {
  */
 export const sendMenu = async (to) => {
     try {
-        // Aseguramos que solo mostramos ítems que tienen stock
-        const menuItems = await MenuItem.find({ cantidad_diaria: { $gt: 0 } }).sort({ categoria: 1, nombre: 1 });
+        // 🛑 CORRECCIÓN CLAVE: Aplicamos el filtro de Doble Disponibilidad 🛑
+        const menuItems = await MenuItem.find({ 
+            disponible: true, // 1. Debe estar disponible para el día
+            cantidad_diaria: { $gt: 0 }, // 2. Debe tener stock restante
+            activo: true // 3. Debe ser un ítem activo (no descontinuado)
+        }).sort({ categoria: 1, nombre: 1 });
 
         let menuText = "*¡Bienvenido al Menú!* 🍔\n\n";
         let currentCategory = "";
@@ -137,7 +140,7 @@ export const sendCartSummary = async (to, cart) => {
     let summaryText = "*🛒 Tu Carrito Actual:*\n\n";
     let subtotal = 0;
     
-    // 🛑 LECTURA DINÁMICA APLICADA AQUÍ 🛑
+    // LECTURA DINÁMICA APLICADA AQUÍ 
     const costoEnvio = await getDeliveryCost(); 
 
     cart.items.forEach((item, index) => {
@@ -147,7 +150,7 @@ export const sendCartSummary = async (to, cart) => {
         // Formato: 1. (x2) Hamburguesa de Pollo - $110.00
         summaryText += `${index + 1}. (x${item.cantidad}) ${item.nombre} - ${formatPrice(totalItemPrice)}\n`;
         if (item.notas) {
-            summaryText += `   _${item.notas}_\n`;
+            summaryText += `   _${item.notas}_\n`;
         }
     });
     
@@ -155,7 +158,7 @@ export const sendCartSummary = async (to, cart) => {
 
     summaryText += "\n*--- Resumen ---\n*";
     summaryText += `Subtotal: ${formatPrice(subtotal)}\n`;
-    // 🛑 USANDO EL VALOR DINÁMICO 🛑
+    // USANDO EL VALOR DINÁMICO 
     summaryText += `Costo de Envío: ${formatPrice(costoEnvio)}\n`; 
     summaryText += `*Total a Pagar: ${formatPrice(total)}*\n`;
     
