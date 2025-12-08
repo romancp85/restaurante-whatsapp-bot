@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import axios from 'axios'; 
 
 // ===============================================================
-// 1. Componente Modal para Crear/Editar Ítem
+// 1. Componente Modal para Crear/Editar Ítem (FINAL CORREGIDO)
 // ===============================================================
 
 const MenuModal = ({ item, onClose, onSave }) => {
@@ -10,20 +11,40 @@ const MenuModal = ({ item, onClose, onSave }) => {
 
     // Inicializa el estado del formulario con el ítem existente o valores por defecto
     const [formData, setFormData] = useState({
+        // Usamos la sintaxis simple (item?.prop || default) para las propiedades no booleanas
         nombre: item?.nombre || '',
-        // El precio se almacena en centavos en el backend, lo mostramos en pesos/dólares
         precio: item?.precio / 100 || 0, 
         categoria: item?.categoria || 'HAMBURGUESAS',
         cantidad_diaria: item?.cantidad_diaria || 0,
         alerta_en: item?.alerta_en || 5,
+        
+        // 🛑 CORRECCIÓN DE LA LÍNEA 21: Usamos el operador ternario simple 🛑
+        // Si item existe, usamos su valor activo; si no, por defecto es true.
+        activo: item ? item.activo : true, 
+        disponible: item ? item.disponible : true, 
     });
+    
+    // NUEVOS ESTADOS PARA MANEJO DE CATEGORÍA LIBRE
+    const [isNewCategory, setIsNewCategory] = useState(false);
+    const [newCategoryText, setNewCategoryText] = useState('');
     
     const isEditing = !!item;
 
     const handleChange = (e) => {
-        const { name, value, type } = e.target;
+        const { name, value, type, checked } = e.target;
         
-        // Manejar el input de precio por separado para mantener el valor flotante en la UI
+        // Manejar la selección de categoría especial
+        if (name === 'categoria') {
+            if (value === 'NEW_CAT') {
+                setIsNewCategory(true);
+                setFormData({ ...formData, categoria: '' });
+                return;
+            } else {
+                setIsNewCategory(false);
+                setNewCategoryText('');
+            }
+        }
+        
         if (name === 'precio') {
             const floatValue = parseFloat(value) || 0;
             setFormData({ ...formData, precio: floatValue });
@@ -32,20 +53,30 @@ const MenuModal = ({ item, onClose, onSave }) => {
 
         setFormData({
             ...formData,
-            // Convertir stock y alerta a número si aplica
-            [name]: (type === 'number') ? Number(value) : value,
+            [name]: (type === 'checkbox') ? checked : 
+                    (type === 'number') ? Number(value) : value,
         });
     };
 
     const handleSubmit = (e) => {
         e.preventDefault();
         
-        // El precio debe ser un entero (en centavos) antes de enviarse al backend
+        // LÓGICA CLAVE: USAR CATEGORÍA LIBRE SI APLICA 
+        let finalCategory = formData.categoria;
+        if (isNewCategory && newCategoryText.trim()) {
+            finalCategory = newCategoryText.trim().toUpperCase();
+        } else if (isNewCategory && !newCategoryText.trim()) {
+            // Si intenta enviar una categoría nueva pero vacía, regresa.
+            alert("Debes ingresar el nombre de la nueva categoría.");
+            return;
+        }
+        
         const priceInCents = Math.round(formData.precio * 100); 
 
-        // Llama a la función onSave con los datos limpios
+        // Llama a la función onSave con la categoría final limpia
         onSave({ 
             ...formData, 
+            categoria: finalCategory, // Utilizamos la categoría final
             precio: priceInCents,
             cantidad_diaria: Number(formData.cantidad_diaria),
             alerta_en: Number(formData.alerta_en)
@@ -81,7 +112,7 @@ const MenuModal = ({ item, onClose, onSave }) => {
                                 type="number"
                                 name="precio"
                                 step="0.01" 
-                                value={formData.precio} // Mostrar el valor temporal flotante
+                                value={formData.precio} 
                                 onChange={handleChange}
                                 required
                                 className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight"
@@ -89,21 +120,36 @@ const MenuModal = ({ item, onClose, onSave }) => {
                         </div>
                         <div className="w-1/2">
                             <label className="block text-gray-700 text-sm font-bold mb-2">Categoría</label>
-                            <select
-                                name="categoria"
-                                value={formData.categoria}
-                                onChange={handleChange}
-                                className="shadow border rounded w-full py-2 px-3 text-gray-700 leading-tight"
-                            >
-                                {CATEGORIES.map(cat => (
-                                    <option key={cat} value={cat}>{cat}</option>
-                                ))}
-                            </select>
+                            
+                            {/* LÓGICA HÍBRIDA DE CATEGORÍA */}
+                            {!isNewCategory ? (
+                                <select
+                                    name="categoria"
+                                    value={formData.categoria}
+                                    onChange={handleChange}
+                                    className="shadow border rounded w-full py-2 px-3 text-gray-700 leading-tight"
+                                >
+                                    {CATEGORIES.map(cat => (
+                                        <option key={cat} value={cat}>{cat}</option>
+                                    ))}
+                                    <option value="NEW_CAT">-- Crear Nueva Categoría --</option>
+                                </select>
+                            ) : (
+                                <input
+                                    type="text"
+                                    name="newCategoryText"
+                                    placeholder="Nueva Categoría (Ej: Postres)"
+                                    value={newCategoryText}
+                                    onChange={(e) => setNewCategoryText(e.target.value)}
+                                    required
+                                    className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight"
+                                />
+                            )}
                         </div>
                     </div>
 
                     {/* Stock y Alerta (en una fila) */}
-                    <div className="flex space-x-4 mb-6">
+                    <div className="flex space-x-4 mb-4">
                         <div className="w-1/2">
                             <label className="block text-gray-700 text-sm font-bold mb-2">Stock Diario</label>
                             <input
@@ -127,6 +173,38 @@ const MenuModal = ({ item, onClose, onSave }) => {
                             />
                         </div>
                     </div>
+                    
+                    {/* CAMPOS BOOLEANOS (Activo / Disponible) */}
+                    <div className="flex space-x-6 mb-6 pt-2 border-t mt-4">
+                        <div className="w-1/2 flex items-center">
+                            <input
+                                type="checkbox"
+                                id="disponible"
+                                name="disponible"
+                                checked={formData.disponible}
+                                onChange={handleChange}
+                                className="h-4 w-4 text-red-600 border-gray-300 rounded focus:ring-red-500"
+                            />
+                            <label htmlFor="disponible" className="ml-2 text-gray-700 text-sm font-bold">
+                                Disponible Hoy ({formData.disponible ? 'Sí' : 'No'})
+                            </label>
+                        </div>
+                        
+                        <div className="w-1/2 flex items-center">
+                            <input
+                                type="checkbox"
+                                id="activo"
+                                name="activo"
+                                checked={formData.activo}
+                                onChange={handleChange}
+                                className="h-4 w-4 text-red-600 border-gray-300 rounded focus:ring-red-500"
+                            />
+                            <label htmlFor="activo" className="ml-2 text-gray-700 text-sm font-bold">
+                                Ítem Activo (Menú Permanente)
+                            </label>
+                        </div>
+                    </div>
+
 
                     {/* Botones */}
                     <div className="flex justify-end space-x-3">
@@ -152,7 +230,7 @@ const MenuModal = ({ item, onClose, onSave }) => {
 
 
 // ===============================================================
-// 2. Componente Principal Menu
+// 2. Componente Principal Menu (CON LÓGICA DE FILTRADO)
 // ===============================================================
 
 function Menu() {
@@ -161,66 +239,60 @@ function Menu() {
     const [message, setMessage] = useState('');
     const [editingId, setEditingId] = useState(null); 
     
-    // Estados para CRUD
+    // Estados para CRUD y Filtro
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [currentEditItem, setCurrentEditItem] = useState(null);
+    const [filterMode, setFilterMode] = useState('DISPONIBLE'); 
 
-    useEffect(() => {
-        fetchMenuItems();
-    }, []);
+
+    // --- LÓGICA DE API (CRUD) ---
 
     const fetchMenuItems = async () => {
+        setLoading(true);
         try {
-            setLoading(true);
-            const response = await fetch('/api/menu');
-            if (!response.ok) throw new Error('Error al cargar el menú.');
-            
-            const data = await response.json();
-            setMenuItems(data);
+            const response = await axios.get('/api/menu'); 
+            setMenuItems(response.data);
         } catch (error) {
-            console.error('Fetch error:', error);
-            setMessage('❌ Error al conectar con el servidor de menú.');
+            setMessage('❌ Error al cargar los productos del menú.');
+            console.error("Error al obtener el menú:", error);
         } finally {
             setLoading(false);
         }
     };
 
-    // --- LÓGICA DE STOCK RÁPIDO ---
-    const handleStockChange = (id, newStock) => {
-        setMenuItems(menuItems.map(item =>
-            item._id === id ? { ...item, cantidad_diaria: Number(newStock) } : item
-        ));
-    };
-
-    const saveStock = async (id) => {
-        setEditingId(id);
-        setMessage('');
-
-        const itemToUpdate = menuItems.find(item => item._id === id);
-
+    const handleSaveItem = async (data, isEditing) => {
         try {
-            const response = await fetch(`/api/menu/${id}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ cantidad_diaria: itemToUpdate.cantidad_diaria }),
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.message || 'Fallo al actualizar el stock.');
+            if (isEditing) {
+                const response = await axios.put(`/api/menu/${currentEditItem._id}`, data);
+                setMessage(`✅ Producto "${response.data.nombre}" actualizado con éxito.`);
+            } else {
+                const response = await axios.post('/api/menu', data);
+                setMessage(`✅ Producto "${response.data.nombre}" creado con éxito.`);
             }
-
-            setMessage(`✅ Stock de ${itemToUpdate.nombre} actualizado.`);
+            setIsModalOpen(false);
+            setCurrentEditItem(null);
+            fetchMenuItems(); // Recargar la lista
         } catch (error) {
-            console.error('Save error:', error);
-            setMessage(`❌ Error al guardar stock: ${error.message}`);
-        } finally {
-            setEditingId(null);
+            setMessage('❌ Error al guardar el producto.');
+            console.error("Error al guardar ítem:", error.response?.data || error);
         }
     };
-    
-    // --- LÓGICA DE MODAL (CRUD) ---
-    const handleOpenModal = (item = null) => {
+
+    const handleDeleteItem = async (id, nombre) => {
+        if (!window.confirm(`¿Estás seguro de que deseas eliminar el producto "${nombre}"?`)) {
+            return;
+        }
+        try {
+            await axios.delete(`/api/menu/${id}`);
+            setMessage(`✅ Producto "${nombre}" eliminado con éxito.`);
+            fetchMenuItems();
+        } catch (error) {
+            setMessage('❌ Error al eliminar el producto.');
+            console.error("Error al eliminar ítem:", error);
+        }
+    };
+
+    const handleOpenModal = (item) => {
         setCurrentEditItem(item);
         setIsModalOpen(true);
     };
@@ -229,60 +301,83 @@ function Menu() {
         setIsModalOpen(false);
         setCurrentEditItem(null);
     };
-    
-    const handleSaveItem = async (formData, isEditing) => {
-        const method = isEditing ? 'PUT' : 'POST';
-        const url = isEditing ? `/api/menu/${currentEditItem._id}` : '/api/menu';
-        setMessage('Guardando ítem...');
 
-        try {
-            const response = await fetch(url, {
-                method: method,
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(formData),
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.message || 'Fallo al guardar el ítem.');
-            }
-
-            handleCloseModal();
-            await fetchMenuItems(); 
-            setMessage(`✅ Ítem ${isEditing ? 'actualizado' : 'creado'} con éxito.`);
-
-        } catch (error) {
-            console.error('CRUD Save error:', error);
-            setMessage(`❌ Error al guardar: ${error.message}`);
-        }
+    const handleStockChange = (id, value) => {
+        const newQuantity = Number(value);
+        setMenuItems(prevItems => prevItems.map(item => 
+            item._id === id ? { ...item, cantidad_diaria: newQuantity } : item
+        ));
     };
 
-    const handleDeleteItem = async (id, nombre) => {
-        if (!window.confirm(`¿Estás seguro de que quieres eliminar "${nombre}" del menú?`)) {
-            return;
-        }
+    const saveStock = async (id) => {
+        const itemToUpdate = menuItems.find(item => item._id === id);
+        if (!itemToUpdate) return;
         
-        setMessage(`Eliminando ${nombre}...`);
+        setEditingId(id);
         try {
-            const response = await fetch(`/api/menu/${id}`, { method: 'DELETE' });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.message || 'Fallo al eliminar el ítem.');
-            }
-
-            await fetchMenuItems(); 
-            setMessage(`✅ Ítem "${nombre}" eliminado con éxito.`);
+            await axios.put(`/api/menu/${id}`, { 
+                cantidad_diaria: itemToUpdate.cantidad_diaria 
+            });
+            setMessage(`✅ Stock de ${itemToUpdate.nombre} actualizado a ${itemToUpdate.cantidad_diaria}.`);
         } catch (error) {
-            console.error('CRUD Delete error:', error);
-            setMessage(`❌ Error al eliminar: ${error.message}`);
+            setMessage(`❌ Error al actualizar stock de ${itemToUpdate.nombre}.`);
+            console.error("Error al guardar stock:", error);
+        } finally {
+            setEditingId(null);
+            fetchMenuItems(); 
         }
     };
+    
+    // --- LÓGICA DE FILTRADO EN EL CLIENTE ---
+    
+    const getFilteredItems = () => {
+        return menuItems.filter(item => {
+            switch (filterMode) {
+                case 'ALL':
+                    return true;
+                case 'DISPONIBLE':
+                    // Muestra items que están disponibles hoy Y activos
+                    return item.disponible === true && item.activo === true; 
+                case 'NO_DISPONIBLE':
+                    // Muestra items que están activos, pero no disponibles (disponible: false)
+                    return item.activo === true && item.disponible === false;
+                case 'INACTIVO':
+                    // Muestra items que están fuera del menú permanente (activo: false)
+                    return item.activo === false;
+                default:
+                    return true;
+            }
+        });
+    };
 
+    useEffect(() => {
+        fetchMenuItems();
+    }, []);
+
+    const filteredItems = getFilteredItems(); 
 
     if (loading) {
         return <p className="p-6 text-xl text-gray-500">Cargando menú...</p>;
     }
+
+    // Sub-componente para los botones de filtro
+    const FilterButton = ({ mode, label, colorClass, itemCount }) => (
+        <button
+            onClick={() => setFilterMode(mode)}
+            className={`py-2 px-4 rounded transition duration-150 text-sm font-semibold 
+                        ${filterMode === mode ? colorClass : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+        >
+            {label} ({itemCount})
+        </button>
+    );
+
+    // Contadores para el UI del filtro
+    const counts = {
+        ALL: menuItems.length,
+        DISPONIBLE: menuItems.filter(i => i.disponible && i.activo).length,
+        NO_DISPONIBLE: menuItems.filter(i => i.activo && !i.disponible).length,
+        INACTIVO: menuItems.filter(i => !i.activo).length,
+    };
 
     return (
         <div className="p-6">
@@ -296,8 +391,16 @@ function Menu() {
                 </div>
             )}
 
-            {/* BOTÓN DE AÑADIR PRODUCTO */}
-            <div className="flex justify-end mb-4">
+            {/* BOTÓN DE AÑADIR PRODUCTO Y CONTROLES DE FILTRO */}
+            <div className="flex justify-between mb-4">
+                
+                <div className="flex space-x-2">
+                    <FilterButton mode="DISPONIBLE" label="✅ Disponibles Hoy" colorClass="bg-green-600 text-white" itemCount={counts.DISPONIBLE} />
+                    <FilterButton mode="NO_DISPONIBLE" label="🟡 Ocultos (Activos)" colorClass="bg-yellow-600 text-white" itemCount={counts.NO_DISPONIBLE} />
+                    <FilterButton mode="INACTIVO" label="❌ Descontinuados" colorClass="bg-red-600 text-white" itemCount={counts.INACTIVO} />
+                    <FilterButton mode="ALL" label="Mostrar Todo" colorClass="bg-indigo-600 text-white" itemCount={counts.ALL} />
+                </div>
+                
                 <button
                     onClick={() => handleOpenModal(null)}
                     className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded transition duration-150"
@@ -318,18 +421,23 @@ function Menu() {
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Categoría</th>
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Precio</th>
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stock Diario</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Acciones Stock</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Especial Hoy</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Activo</th> 
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Acciones Rápida</th> 
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Opciones CRUD</th>
                         </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
-                        {menuItems.map((item) => (
-                            <tr key={item._id} className={item.cantidad_diaria <= item.alerta_en ? 'bg-yellow-50' : ''}>
+                        {filteredItems.map((item) => (
+                            <tr key={item._id} 
+                                className={
+                                    item.cantidad_diaria <= item.alerta_en ? 'bg-yellow-50' : 
+                                    !item.activo ? 'bg-gray-100 opacity-60' : 
+                                    !item.disponible ? 'bg-yellow-50' : ''
+                                }
+                            >
                                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                                     {item.nombre}
-                                    {item.cantidad_diaria <= item.alerta_en && (
-                                        <span className="ml-2 text-xs text-red-600 font-semibold"> (¡STOCK BAJO!)</span>
-                                    )}
                                 </td>
                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.categoria}</td>
                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
@@ -345,15 +453,33 @@ function Menu() {
                                         disabled={editingId === item._id}
                                     />
                                 </td>
+                                
+                                {/* Columna Disponibilidad */}
+                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${item.disponible ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                                        {item.disponible ? 'Sí' : 'No'}
+                                    </span>
+                                </td>
+
+                                {/* Columna Activo */}
+                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${item.activo ? 'bg-indigo-100 text-indigo-800' : 'bg-gray-100 text-gray-800'}`}>
+                                        {item.activo ? 'Menú' : 'Fuera'}
+                                    </span>
+                                </td>
+
+                                {/* Columna Acciones Rápida (Guardar Stock) */}
                                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                                     <button
                                         onClick={() => saveStock(item._id)}
                                         disabled={editingId === item._id}
                                         className="bg-blue-500 hover:bg-blue-600 text-white py-1 px-3 rounded text-xs disabled:opacity-50"
                                     >
-                                        {editingId === item._id ? 'Guardando...' : 'Guardar'}
+                                        {editingId === item._id ? 'Guardando...' : 'Guardar Stock'}
                                     </button>
                                 </td>
+
+                                {/* Columna Opciones CRUD */}
                                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                                     <button
                                         onClick={() => handleOpenModal(item)}
@@ -385,5 +511,6 @@ function Menu() {
         </div>
     );
 }
+
 
 export default Menu;
