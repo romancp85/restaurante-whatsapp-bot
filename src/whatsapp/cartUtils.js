@@ -1,4 +1,4 @@
-// src/whatsapp/cartUtils.js
+// src/whatsapp/cartUtils.js - LÓGICA DE VALIDACIÓN Y ESTRUCTURA DE RETORNO ESTABLE
 
 import ShoppingCart from '../models/ShoppingCart.js';
 import MenuItem from '../models/MenuItem.js';
@@ -28,21 +28,15 @@ export const getOrCreateCart = async (clientPhone) => {
  */
 export const updateCart = async (clientPhone, updates) => {
     const cart = await getOrCreateCart(clientPhone);
-    // Aplicar la última actividad antes de cualquier actualización
     updates.lastActivity = Date.now();
     
-    // Si se proporciona conversationState, actualizarlo
     if (updates.conversationState) {
         cart.conversationState = updates.conversationState;
     }
 
-    // Si se proporciona tempData, fusionarlo
     if (updates.tempData) {
-        // Asegurarse de que tempData sea un objeto antes de fusionar
         cart.tempData = { ...cart.tempData, ...updates.tempData };
     }
-    
-    // Para otros campos como items, se deben manejar directamente en el objeto cart antes de llamar a save.
     
     await cart.save();
     return cart;
@@ -55,18 +49,46 @@ export const updateCart = async (clientPhone, updates) => {
  * @param {string} itemId - ID del producto.
  * @param {number} quantity - Cantidad a añadir.
  * @param {string} notes - Notas o especificaciones para el ítem.
- * @returns {Promise<ShoppingCart|null>} El carrito actualizado o null si el ítem no existe.
+ * @returns {Promise<object>} Objeto de resultado estructurado (success: boolean, name: string, reason?: string).
  */
 export const addItemToCart = async (cart, itemId, quantity, notes = '') => {
     const itemData = await MenuItem.findById(itemId);
 
     if (!itemData) {
         logger.warn(`Intento de añadir ítem no encontrado: ${itemId}`);
-        return null;
+        return { success: false, name: `ID:${itemId}`, reason: 'NO_ENCONTRADO' };
     }
     
-    // 🛑 CORRECCIÓN: Si quantity no es un número válido, se establece a 1 (para la IA) 🛑
-    const finalQuantity = parseInt(quantity) > 0 ? parseInt(quantity) : 1; 
+    // VALIDACIÓN 1: Ítem no activo o no disponible hoy
+    if (itemData.activo === false) {
+        logger.warn(`Intento de añadir ítem inactivo (fuera de menú): ${itemData.nombre}`);
+        return { success: false, name: itemData.nombre, reason: 'INACTIVO' };
+    }
+    
+    if (itemData.disponible === false) {
+        logger.warn(`Intento de añadir ítem no disponible hoy: ${itemData.nombre}`);
+        return { success: false, name: itemData.nombre, reason: 'NO_DISPONIBLE' }; 
+    }
+    // ----------------------------------------------------------------------
+
+    const finalQuantity = parseInt(quantity) > 0 ? parseInt(quantity) : 1;
+    const disponibleHoy = itemData.cantidad_diaria - itemData.vendidas_hoy;
+    
+    // 🛑 CORRECCIÓN CRÍTICA (Línea 96): Usar toString() para robustez 🛑
+    const existingItemIndex = cart.items.findIndex(i => 
+        (i.itemId?.toString() === itemData._id.toString()) && i.notas === notes
+    );
+    // ----------------------------------------------------------------------
+    
+    const cantidadEnCarrito = existingItemIndex > -1 ? cart.items[existingItemIndex].cantidad : 0;
+    
+    // VALIDACIÓN 2: Stock
+    if (cantidadEnCarrito + finalQuantity > disponibleHoy) {
+        logger.warn(`Intento de exceder stock de ${itemData.nombre}. Disponible: ${disponibleHoy}`);
+        return { success: false, name: itemData.nombre, reason: 'SIN_STOCK', available: disponibleHoy };
+    }
+    // ----------------------------------------------------------------------
+
 
     const newItem = {
         itemId: itemData._id,
@@ -76,22 +98,15 @@ export const addItemToCart = async (cart, itemId, quantity, notes = '') => {
         notas: notes,
     };
 
-    // Buscamos si el ítem ya existe en el carrito
-    const existingItemIndex = cart.items.findIndex(i => 
-        i.itemId.equals(itemData._id) && i.notas === notes
-    );
-
     if (existingItemIndex > -1) {
-        // Si existe, aumentamos la cantidad
         cart.items[existingItemIndex].cantidad += finalQuantity;
     } else {
-        // Si es nuevo, lo agregamos
         cart.items.push(newItem);
     }
     
     cart.lastActivity = Date.now();
     await cart.save();
-    return cart;
+    return { success: true, name: itemData.nombre, quantity: finalQuantity };
 };
 
 

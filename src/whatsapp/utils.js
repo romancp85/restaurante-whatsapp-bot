@@ -1,4 +1,4 @@
-// src/whatsapp/utils.js - VERSIÓN COMPLETA Y CORREGIDA PARA LECTURA DE COSTO DINÁMICO Y FILTRO DE MENÚ
+// src/whatsapp/utils.js - VERSIÓN FINAL ESTABLE Y UNIVERSAL
 
 import axios from 'axios';
 import MenuItem from '../models/MenuItem.js';
@@ -31,7 +31,6 @@ const formatPrice = (priceInCents) => {
 const getDeliveryCost = async () => {
     try {
         const config = await getGlobalConfig();
-        // Asumiendo que el campo es 'costoEnvioCents'
         const cost = config.costoEnvioCents; 
         
         if (typeof cost === 'number' && cost >= 0) {
@@ -45,45 +44,53 @@ const getDeliveryCost = async () => {
 };
 
 /**
- * Función genérica para enviar cualquier tipo de mensaje de texto a WhatsApp.
+ * Función genérica para enviar cualquier tipo de mensaje a WhatsApp.
+ * Acepta: 1. Una cadena de texto (ej: "Hola")
+ * 2. Un objeto de contenido estructurado (ej: { type: 'text', text: { body: '...' } })
  * @param {string} to - Número de teléfono del destinatario.
- * @param {string} text - Contenido del mensaje.
+ * @param {string|object} content - Contenido del mensaje.
  */
-export const sendMessage = async (to, text) => {
+export const sendMessage = async (to, content) => {
+    // 🛑 CORRECCIÓN UNIVERSAL: Detectar si es texto plano o un objeto de contenido 🛑
+    const payload = typeof content === 'string'
+        ? { type: 'text', text: { body: content } } 
+        : content;
+
     try {
         await axios.post(API_URL, {
             messaging_product: 'whatsapp',
             recipient_type: 'individual',
             to: to,
-            type: 'text',
-            text: {
-                preview_url: false, 
-                body: text
-            }
+            ...payload // Spread del contenido (sea objeto o texto ya envuelto)
         }, {
             headers: {
                 'Authorization': `Bearer ${WABA_TOKEN}`,
                 'Content-Type': 'application/json'
             }
         });
-        logger.info(`Mensaje enviado a ${to}: "${text.substring(0, 50)}..."`);
+        
+        // Loggear el cuerpo del texto de forma segura
+        const logText = payload.text?.body || payload.interactive?.body?.text || JSON.stringify(payload);
+        logger.info(`Mensaje enviado a ${to}: "${logText.substring(0, 50)}..."`);
+        
     } catch (error) {
-        logger.error(`Error al enviar mensaje a ${to}:`, error.response?.data || error.message);
+        // Log de depuración robusto
+        const errorDetail = error.response?.data || error.message;
+        logger.error(`Error al enviar mensaje a ${to}:`, errorDetail);
     }
 };
 
 /**
  * Formatea y envía el menú completo al cliente usando texto plano.
- * Además, guarda el mapeo de índice-ID en el carrito para procesar la selección.
  * @param {string} to - Número de teléfono del destinatario.
  */
 export const sendMenu = async (to) => {
     try {
-        // 🛑 CORRECCIÓN CLAVE: Aplicamos el filtro de Doble Disponibilidad 🛑
+        // Filtramos por disponible, stock y activo
         const menuItems = await MenuItem.find({ 
-            disponible: true, // 1. Debe estar disponible para el día
-            cantidad_diaria: { $gt: 0 }, // 2. Debe tener stock restante
-            activo: true // 3. Debe ser un ítem activo (no descontinuado)
+            disponible: true, 
+            cantidad_diaria: { $gt: 0 }, 
+            activo: true
         }).sort({ categoria: 1, nombre: 1 });
 
         let menuText = "*¡Bienvenido al Menú!* 🍔\n\n";
@@ -93,15 +100,12 @@ export const sendMenu = async (to) => {
         const menuMap = menuItems.map((item, index) => {
             const itemNumber = index + 1;
             
-            // Añadir encabezado de categoría si cambia
             if (item.categoria !== currentCategory) {
                 currentCategory = item.categoria;
                 menuText += `\n*-- ${currentCategory.toUpperCase()} --*\n`;
             }
-            // Formato: [1] Hamburguesa Clásica - $55.00
             menuText += `[${itemNumber}] ${item.nombre} - ${formatPrice(item.precio)}\n`;
 
-            // Mapeo para guardar temporalmente
             return { 
                 index: itemNumber, 
                 itemId: item._id, 
@@ -112,7 +116,8 @@ export const sendMenu = async (to) => {
         menuText += "\n👉 *Responde con el número* del producto que deseas pedir (ej: *5*).";
         menuText += "\n\nO utiliza estos comandos:\n👉 *CARRITO*: Ver tus productos.\n👉 *FINALIZAR*: Ir a checkout.";
 
-        await sendMessage(to, menuText);
+        // Usamos la versión de cadena de texto de sendMessage
+        await sendMessage(to, menuText); 
         
         // 2. GUARDAR EL MAPEO Y ACTUALIZAR EL ESTADO 
         await updateCart(to, { 
@@ -140,14 +145,12 @@ export const sendCartSummary = async (to, cart) => {
     let summaryText = "*🛒 Tu Carrito Actual:*\n\n";
     let subtotal = 0;
     
-    // LECTURA DINÁMICA APLICADA AQUÍ 
     const costoEnvio = await getDeliveryCost(); 
 
     cart.items.forEach((item, index) => {
         const totalItemPrice = item.precioUnitario * item.cantidad;
         subtotal += totalItemPrice;
         
-        // Formato: 1. (x2) Hamburguesa de Pollo - $110.00
         summaryText += `${index + 1}. (x${item.cantidad}) ${item.nombre} - ${formatPrice(totalItemPrice)}\n`;
         if (item.notas) {
             summaryText += `   _${item.notas}_\n`;
@@ -158,7 +161,6 @@ export const sendCartSummary = async (to, cart) => {
 
     summaryText += "\n*--- Resumen ---\n*";
     summaryText += `Subtotal: ${formatPrice(subtotal)}\n`;
-    // USANDO EL VALOR DINÁMICO 
     summaryText += `Costo de Envío: ${formatPrice(costoEnvio)}\n`; 
     summaryText += `*Total a Pagar: ${formatPrice(total)}*\n`;
     
@@ -188,11 +190,9 @@ export const sendPaymentMethodOptions = async (to) => {
                 title: method 
             }
         }));
-
-        await axios.post(API_URL, {
-            messaging_product: 'whatsapp',
-            recipient_type: 'individual',
-            to: to,
+        
+        // Construcción manual del payload interactivo
+        const interactivePayload = {
             type: 'interactive',
             interactive: {
                 type: 'button',
@@ -203,12 +203,10 @@ export const sendPaymentMethodOptions = async (to) => {
                     buttons: buttons
                 }
             }
-        }, {
-            headers: {
-                'Authorization': `Bearer ${WABA_TOKEN}`,
-                'Content-Type': 'application/json'
-            }
-        });
+        };
+
+        // Enviamos el objeto estructurado
+        await sendMessage(to, interactivePayload);
         
         logger.info(`Opciones de pago enviadas a ${to}.`);
 
