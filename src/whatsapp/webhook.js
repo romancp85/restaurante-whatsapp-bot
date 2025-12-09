@@ -1,7 +1,8 @@
-// src/whatsapp/webhook.js - VERSIÓN FINAL CON CORRECCIÓN DE BUCLE "HOLA"
+// src/whatsapp/webhook.js - VERSIÓN FINAL ESTABLE CON CORRECCIÓN DE SCOPE
 
 import express from 'express';
-import { getOrCreateCart, updateCart, addItemToCart, removeItemFromCart } from './cartUtils.js';
+// Asegúrate de que addItemToCart es la versión que devuelve el objeto de resultado estructurado
+import { getOrCreateCart, updateCart, addItemToCart, removeItemFromCart } from './cartUtils.js'; 
 import { sendMessage, sendMenu, sendCartSummary, sendPaymentMethodOptions } from './utils.js';
 import { getGlobalConfig } from '../services/configServiceDB.js'; 
 import { processFinalOrder } from './orderProcessor.js';
@@ -15,8 +16,14 @@ const router = express.Router();
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN; 
 
 // ----------------------------------------------------------------------
-// FUNCIONES AUXILIARES PARA EL FLUJO DE ESTADOS
+// FUNCIONES AUXILIARES PARA MENSAJES
 // ----------------------------------------------------------------------
+
+// 🛑 DEFINICIÓN CRÍTICA: Define enviarTexto localmente para asegurar el scope 🛑
+const enviarTexto = async (to, texto) => {
+    // Usamos el sendMessage importado de ./utils.js
+    await sendMessage(to, { type: "text", text: { body: texto } });
+};
 
 /**
  * Procesa el mensaje de un cliente en función del estado de la conversación.
@@ -42,16 +49,13 @@ async function handleStateFlow(from, text, cart) {
                 cart.tempData.currentItemId = selectedItem.itemId;
                 cart.tempData.itemName = selectedItem.nombre;
                 await updateCart(from, { tempData: cart.tempData, conversationState: 'PREGUNTANDO_CANTIDAD' });
-                await sendMessage(from, `¿Cuántas unidades de *${selectedItem.nombre}* deseas? (Solo el número)`);
+                await enviarTexto(from, `¿Cuántas unidades de *${selectedItem.nombre}* deseas? (Solo el número)`);
             } else {
-                // 🛑 CORRECCIÓN: Si el usuario escribe texto libre y está en el menú,
-                // enviamos el menú de nuevo con un mensaje claro, en lugar de un error.
-                await sendMessage(from, "No entendí ese número. Por favor, selecciona un producto enviando su número (ej: 5) o escribe *MENÚ* para ver la lista de nuevo.");
+                await enviarTexto(from, "No entendí ese número. Por favor, selecciona un producto enviando su número (ej: 5) o escribe *MENÚ* para ver la lista de nuevo.");
             }
             break;
         
         case 'PREGUNTANDO_CANTIDAD':
-        // ... (el resto de este case se mantiene igual)
             const quantity = parseInt(text);
             if (quantity > 0 && cart.tempData.currentItemId) {
                 const itemId = cart.tempData.currentItemId;
@@ -59,40 +63,35 @@ async function handleStateFlow(from, text, cart) {
                 
                 cart.tempData = {};
                 await updateCart(from, { tempData: {}, conversationState: 'EN_CARRITO' });
-                await sendMessage(from, "¡Añadido! Escribe *CARRITO* para revisar o *MENÚ* para seguir agregando.");
+                await enviarTexto(from, "¡Añadido! Escribe *CARRITO* para revisar o *MENÚ* para seguir agregando.");
             } else {
-                await sendMessage(from, "Por favor, ingresa una cantidad válida (solo números).");
+                await enviarTexto(from, "Por favor, ingresa una cantidad válida (solo números).");
             }
             break;
 
         case 'EN_CARRITO':
-        // ... (se mantiene igual)
-            await sendMessage(from, "Escribe *MENÚ* para agregar más productos o *FINALIZAR* para continuar.");
+            await enviarTexto(from, "Escribe *MENÚ* para agregar más productos o *FINALIZAR* para continuar.");
             break;
 
         case 'PREGUNTANDO_NOMBRE':
-        // ... (se mantiene igual)
             cart.tempData.name = text.trim();
             await updateCart(from, { tempData: cart.tempData, conversationState: 'PREGUNTANDO_DIRECCION' });
-            await sendMessage(from, `¡Genial, ${cart.tempData.name}! ¿Cuál es la *dirección completa* para la entrega?`);
+            await enviarTexto(from, `¡Genial, ${cart.tempData.name}! ¿Cuál es la *dirección completa* para la entrega?`);
             break;
 
         case 'PREGUNTANDO_DIRECCION':
-        // ... (se mantiene igual)
             cart.tempData.address = text.trim();
             await updateCart(from, { tempData: cart.tempData, conversationState: 'PREGUNTANDO_PAGO' });
             await sendPaymentMethodOptions(from);
             break;
 
         case 'PREGUNTANDO_PAGO':
-        // ... (se mantiene igual)
             await sendPaymentMethodOptions(from);
-            await sendMessage(from, "Por favor, selecciona una opción con los botones.");
+            await enviarTexto(from, "Por favor, selecciona una opción con los botones.");
             break;
             
         case 'CONFIRMANDO_PEDIDO':
-        // ... (se mantiene igual)
-            await sendMessage(from, "Por favor, escribe *CONFIRMAR* para procesar tu pedido o *CARRITO* para revisar antes de finalizar.");
+            await enviarTexto(from, "Por favor, escribe *CONFIRMAR* para procesar tu pedido o *CARRITO* para revisar antes de finalizar.");
             break;
         
         case 'ESPERANDO_AGENTE':
@@ -108,51 +107,92 @@ async function handleStateFlow(from, text, cart) {
 
 /**
  * Intenta analizar el texto libre con IA para añadir productos y datos de envío.
- * @param {string} from - Número de teléfono.
- * @param {string} text - Contenido del mensaje (en minúsculas y trim).
- * @param {object} cart - Objeto de carrito actual.
  */
 async function handleAICheck(from, text, cart) {
-    if (text) {
+    // 🛑 AGREGAMOS UN TRY/CATCH AISLADO PARA DEPURAR FALLAS SEVERAS 🛑
+    try {
+        if (!text) return await handleStateFlow(from, text, cart);
+
         const aiResponse = await analizarPedidoConIA(text); 
         const itemsAñadir = aiResponse?.items || [];
         const clienteInfo = aiResponse?.clienteInfo; 
 
-        let addedCount = 0;
-
-        // 1. Procesar ítems
-        if (itemsAñadir.length > 0) {
-            for (const item of itemsAñadir) {
-                const resultCart = await addItemToCart(cart, item.itemId, item.quantity, item.notes);
-                if (resultCart) addedCount++;
-            }
+        if (itemsAñadir.length === 0) {
+            return await handleStateFlow(from, text, cart);
+        }
+        
+        const results = [];
+        
+        // 1. Procesar ítems y obtener resultados detallados
+        for (const item of itemsAñadir) {
+            const result = await addItemToCart(cart, item.itemId, item.quantity); 
+            results.push(result);
         } 
+        
+        const successfulItems = results.filter(r => r.success);
+        const failedItems = results.filter(r => !r.success);
 
-        // 2. Procesar y Guardar Datos de Cliente (SALTO RÁPIDO)
-        if (addedCount > 0 && clienteInfo && clienteInfo.nombre && clienteInfo.direccion) {
-            
+        let feedbackMessage = '';
+
+        // A. Reportar Éxitos
+        if (successfulItems.length > 0) {
+            const addedNames = successfulItems.map(r => `${r.quantity}x ${r.name}`).join(', ');
+            feedbackMessage += `✅ *¡Entendido!* Se añadieron al carrito: ${addedNames}.\n`;
+        }
+
+        // B. Reportar Fallos
+        if (failedItems.length > 0) {
+            const failureMessages = failedItems.map(r => {
+                switch (r.reason) {
+                    case 'NO_DISPONIBLE':
+                        return `❌ *${r.name}*: Está agotado por hoy.`;
+                    case 'SIN_STOCK':
+                        return `❌ *${r.name}*: Solo quedan ${r.available || 0} unidades. No se añadió.`;
+                    case 'INACTIVO':
+                        return `❌ *${r.name}*: Ya no está en nuestro menú permanente.`;
+                    case 'NO_ENCONTRADO':
+                        return `❌ Producto con ID ${r.name} no encontrado.`;
+                    default:
+                        return `❌ Producto ${r.name}: Falló la validación.`;
+                }
+            }).join('\n');
+
+            feedbackMessage += `\n\n*⚠️ Tuvimos problemas con estos ítems:*\n${failureMessages}`;
+        }
+
+        // 2. Procesar Datos de Cliente (SALTO RÁPIDO)
+        if (successfulItems.length > 0 && clienteInfo && clienteInfo.nombre && clienteInfo.direccion) {
             cart.tempData.name = clienteInfo.nombre;
             cart.tempData.address = clienteInfo.direccion;
-            
             const rawPayment = clienteInfo.metodoPago || 'Efectivo';
             const formattedMethod = rawPayment.charAt(0).toUpperCase() + rawPayment.slice(1).toLowerCase();
             cart.tempData.paymentMethod = formattedMethod;
-            
-            await updateCart(from, { tempData: cart.tempData, conversationState: 'CONFIRMANDO_PEDIDO' });
 
-            await sendMessage(from, `🥳 *¡Pedido Rápido!* He añadido ${addedCount} productos y capturé tus datos.\n\nEscribe *CARRITO* para revisar o *CONFIRMAR* para enviar.`);
+            await updateCart(from, { tempData: cart.tempData, conversationState: 'CONFIRMANDO_PEDIDO' });
+            await enviarTexto(from, `${feedbackMessage}\n\n🥳 *¡Pedido Rápido!* He capturado tus datos. Escribe *CARRITO* para revisar o *CONFIRMAR* para enviar.`);
             return; 
         }
         
-        // 3. Respuesta si solo se agregaron ítems (o si la IA no pudo saltar)
-        if (addedCount > 0) {
+        // 3. Respuesta si solo se agregaron ítems (o si hubo fallos parciales)
+        if (successfulItems.length > 0) {
             await updateCart(from, { conversationState: 'EN_CARRITO' });
-            await sendMessage(from, `🤖 Entendido! He añadido ${addedCount} productos a tu carrito. Escribe *CARRITO* para revisar o *MENÚ* para seguir agregando.`);
+            await enviarTexto(from, `${feedbackMessage}\n\nEscribe *MENÚ* o *FINALIZAR* para completar tu pedido.`);
             return;
         } 
         
+        // Si no se pudo añadir nada, pero hubo un intento de IA
+        if (failedItems.length > 0) {
+            await enviarTexto(from, feedbackMessage);
+            return;
+        }
+
         // Si no es un comando y la IA no encontró nada, volvemos al flujo de estado normal
         await handleStateFlow(from, text, cart);
+
+    } catch (error) {
+        // Usamos console.error directamente para garantizar que el error sea visible
+        console.error('ERROR CRÍTICO EN handleAICheck:', error); 
+        await enviarTexto(from, "⚠️ Lo sentimos, ocurrió un error interno al procesar tu pedido. Por favor, inténtalo de nuevo.");
     }
 }
 
@@ -162,14 +202,17 @@ async function handleAICheck(from, text, cart) {
 // ----------------------------------------------------------------------
 
 router.post('/webhook', async (req, res) => {
+    // 🛑 CORRECCIÓN 3: Inicializar variables críticas fuera del try 🛑
+    let from = null; 
+    let messageObject = null;
+
     try {
-        // LECTURA DIRECTA DEL OBJETO DE MENSAJE
-        const messageObject = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+        messageObject = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
         if (!messageObject) {
             return res.sendStatus(200);
         }
 
-        const from = messageObject.from;
+        from = messageObject.from; 
         const text = (messageObject.text?.body || '').trim().toLowerCase(); 
         const normalizedText = text.toUpperCase();
 
@@ -182,7 +225,7 @@ router.post('/webhook', async (req, res) => {
         const closedMessage = config?.closedMessage ?? "Estamos cerrados temporalmente. Disculpa.";
 
         if (!open) {
-            await sendMessage(from, closedMessage);
+            await enviarTexto(from, closedMessage); 
             return res.sendStatus(200);
         }
         
@@ -197,14 +240,13 @@ router.post('/webhook', async (req, res) => {
 
                 await updateCart(from, { tempData: cart.tempData, conversationState: 'CONFIRMANDO_PEDIDO' });
                 await sendCartSummary(from, cart);
-                await sendMessage(from, "Hemos registrado tu forma de pago. Escribe *CONFIRMAR* para enviar el pedido.");
+                await enviarTexto(from, "Hemos registrado tu forma de pago. Escribe *CONFIRMAR* para enviar el pedido.");
                 return res.sendStatus(200);
             }
         }
 
 
         // 4. Manejar Comandos Globales
-        // 🛑 CORRECCIÓN: INCLUIR HOLA/MENU EN COMANDOS GLOBALES 🛑
         if (normalizedText === 'MENÚ' || normalizedText === 'MENU' || normalizedText === 'HOLA') {
             await sendMenu(from);
             return res.sendStatus(200);
@@ -217,10 +259,10 @@ router.post('/webhook', async (req, res) => {
 
         if (normalizedText === 'FINALIZAR') {
             if (cart.items.length === 0) {
-                 await sendMessage(from, "Tu carrito está vacío. Escribe *MENÚ* para empezar.");
+                await enviarTexto(from, "Tu carrito está vacío. Escribe *MENÚ* para empezar.");
             } else {
                 await updateCart(from, { conversationState: 'PREGUNTANDO_NOMBRE' });
-                await sendMessage(from, "¡Perfecto! Vamos a finalizar. ¿Cuál es tu nombre completo?");
+                await enviarTexto(from, "¡Perfecto! Vamos a finalizar. ¿Cuál es tu nombre completo?");
             }
             return res.sendStatus(200);
         }
@@ -240,7 +282,7 @@ router.post('/webhook', async (req, res) => {
         
         if (normalizedText === 'AYUDA' || normalizedText === 'AGENTE') {
             await updateCart(from, { conversationState: 'ESPERANDO_AGENTE' });
-            await sendMessage(from, "Un agente humano ha sido notificado y se pondrá en contacto contigo a la brevedad. Por favor, espera su mensaje.");
+            await enviarTexto(from, "Un agente humano ha sido notificado y se pondrá en contacto contigo a la brevedad. Por favor, espera su mensaje.");
             return res.sendStatus(200);
         }
 
@@ -248,18 +290,18 @@ router.post('/webhook', async (req, res) => {
         // 5. Flujo de IA o Flujo de Estado
         
         if (cart.items.length === 0 || ['INICIO', 'EMPEZAR'].includes(cart.conversationState)) {
-             // Usamos 'text' (minúsculas) aquí para el análisis de IA
-             await handleAICheck(from, text, cart); 
+            await handleAICheck(from, text, cart); 
         } else {
-             // Si hay ítems o está en medio de un flujo, usamos el flujo de estado
-             await handleStateFlow(from, text, cart);
+            await handleStateFlow(from, text, cart);
         }
 
         res.sendStatus(200);
 
     } catch (error) {
         logger.error('Error catastrófico en receiveMessage:', error);
-        await sendMessage(messageObject?.from, "⚠️ Lo sentimos, un error inesperado ocurrió. Por favor, intenta de nuevo o escribe *MENÚ*.");
+        if (from) {
+            await enviarTexto(from, "⚠️ Lo sentimos, un error inesperado ocurrió. Por favor, intenta de nuevo o escribe *MENÚ*.");
+        }
         res.sendStatus(500);
     }
 });
