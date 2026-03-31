@@ -48,14 +48,22 @@ async function agregarItemsIAAlCarrito(from, itemsAñadir, session) {
         const cantidad = Math.max(1, parseInt(item.cantidad, 10) || 1); 
 
         try {
-            const menu = await MenuItem.findById(itemId);
-
-            if (!menu) {
-                logger.warn(`IA devolvió un itemId no encontrado: ${itemId}`);
+            // 🛡️ FILTRO DE SEGURIDAD PARA MONGOOSE
+            // Si el itemId no tiene el formato de 24 caracteres, lo ignoramos de inmediato.
+            if (!itemId || !/^[0-9a-fA-F]{24}$/.test(itemId.toString())) {
+                logger.warn(`[IA Error] Se recibió un ID inválido (${itemId}). Saltando item.`);
                 continue; 
             }
 
-            // Lógica de STOCK
+            // Ahora sí es seguro hacer el findById
+            const menu = await MenuItem.findById(itemId);
+
+            if (!menu) {
+                logger.warn(`IA devolvió un itemId no encontrado en DB: ${itemId}`);
+                continue; 
+            }
+
+            // --- Lógica de STOCK ---
             const disponible = menu.cantidad_diaria - menu.vendidas_hoy;
             const itemKey = menu._id.toString(); 
             const existente = session.cart.find(p => (p.itemId || p._id)?.toString() === itemKey);
@@ -78,6 +86,7 @@ async function agregarItemsIAAlCarrito(from, itemsAñadir, session) {
             itemsAgregados.push(`${cantidad}x ${menu.nombre}`);
 
         } catch (error) {
+            // Este catch ahora solo atrapará errores reales de conexión, no de formato
             logger.error(`Error al procesar ítem IA (${itemId}): ${error.message}`);
         }
     }
@@ -88,13 +97,15 @@ async function agregarItemsIAAlCarrito(from, itemsAñadir, session) {
         await enviarTexto(from, `¡Entendido! Añadí al carrito: *${nombresAgregados}*.\n\nEscribe *menú* o *finalizar* para completar tu pedido.`);
         await enviarBotonFinalizar(from);
     } else if (itemsAñadir.length > 0) {
-        await enviarTexto(from, 'Lo siento, no pude encontrar o procesar los productos que mencionaste.');
+        await enviarTexto(from, 'Lo siento, no pude encontrar los productos exactos en nuestro menú actual.');
     }
 
-    await updateUserSession(from, session);
+    // Nota: Asegúrate de que senderID esté definido o usa 'from'
+    const idParaActualizar = typeof senderID !== 'undefined' ? senderID : from;
+    await updateUserSession(idParaActualizar, session);
+    
     return itemsAgregados;
 }
-
 
 // === HANDLERS DE MENSAJES ===
 
@@ -351,7 +362,7 @@ Nombre: ${ACCOUNT_HOLDER}
             MenuItem.findByIdAndUpdate(item.itemId, { $inc: { vendidas_hoy: item.cantidad } }) 
         );
         await Promise.all(itemUpdates); 
-        await deleteUserSession(to);
+        await deleteUserSession(senderID);
 
         const lista = session.cart.map(p => `${p.cantidad}x ${p.nombre}`).join('\n');
         

@@ -17,7 +17,7 @@ const getDeliveryCost = async () => {
     try {
         const config = await getGlobalConfig();
         // Asumiendo que el campo es 'costoEnvioCents'
-        const cost = config.costoEnvioCents; 
+        const cost = config?.costoEnvioCents; // Usa el signo '?' para protegerte 
         
         if (typeof cost === 'number' && cost >= 0) {
             return cost;
@@ -34,8 +34,15 @@ const getDeliveryCost = async () => {
  * Procesa la orden final, crea el registro de Pedido, y limpia el carrito.
  * @param {object} cart - El objeto ShoppingCart del cliente.
  */
-export const processFinalOrder = async (cart) => {
-    const { clientPhone, items, tempData } = cart;
+export const processFinalOrder = async (userId, cart) => { // <--- Añade 'userId' aquí
+    // Usamos 'cart' directamente, ya que lo recibimos como segundo argumento
+    const { clientPhone, items, tempData } = cart; 
+    
+    // 🛡️ RED DE SEGURIDAD EXTRA
+    if (!items || !Array.isArray(items)) {
+        logger.error(`Error: items no es un array para ${clientPhone}`);
+        return null;
+    }
 
     if (items.length === 0) {
         await sendMessage(clientPhone, "No puedes finalizar un pedido con el carrito vacío. Escribe *MENÚ* para empezar.");

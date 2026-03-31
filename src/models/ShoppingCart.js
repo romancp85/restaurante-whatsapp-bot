@@ -17,6 +17,7 @@ const shoppingCartSchema = new mongoose.Schema({
         unique: true,
     },
     items: [itemSchema],
+    default: [], // 🛡️ Esto asegura que .length NUNCA falle
     conversationState: {
         type: String,
         enum: [
@@ -49,8 +50,8 @@ const shoppingCartSchema = new mongoose.Schema({
 
 // Configuramos un índice TTL en el campo 'updatedAt'.
 // 2 horas = 7200 segundos (60 segundos * 60 minutos * 2 horas).
-// Si el cliente no interactúa con el carrito en 2 horas, MongoDB lo borrará.
-shoppingCartSchema.index({ "updatedAt": 1 }, { expireAfterSeconds: 600 }); 
+// Si el cliente no interactúa con el carrito en media hora, MongoDB lo borrará.
+shoppingCartSchema.index({ "updatedAt": 1 }, { expireAfterSeconds: 1800 }); 
 
 // ----------------------------------------------------
 
