@@ -157,6 +157,7 @@ export const sendCartSummary = async (to, cart) => {
         }
     });
     
+// --- Reemplaza la parte final de sendCartSummary ---
     const total = subtotal + costoEnvio;
 
     summaryText += "\n*--- Resumen ---\n*";
@@ -164,7 +165,17 @@ export const sendCartSummary = async (to, cart) => {
     summaryText += `Costo de Envío: ${formatPrice(costoEnvio)}\n`; 
     summaryText += `*Total a Pagar: ${formatPrice(total)}*\n`;
     
-    summaryText += "\n\n*Opciones:*\n👉 *FINALIZAR*: Ir a checkout.\n👉 *MENÚ*: Agregar más productos.\n👉 *QUITAR [X]*: Eliminar el ítem por su número (ej: *QUITAR 1*).";
+    summaryText += "\n\n*Opciones:*";
+
+    // 🚩 Lógica dinámica según el estado del pedido
+    if (cart.conversationState === 'CONFIRMANDO_PEDIDO') {
+        summaryText += "\n✅ Escribe *CONFIRMAR* para enviar tu pedido a la cocina.";
+        summaryText += "\n❌ Escribe *QUITAR [X]* para eliminar un producto.";
+    } else {
+        summaryText += "\n👉 *FINALIZAR*: Ir a checkout.";
+        summaryText += "\n👉 *MENÚ*: Agregar más productos.";
+        summaryText += "\n👉 *QUITAR [X]*: Eliminar el ítem.";
+    }
 
     await sendMessage(to, summaryText);
 };

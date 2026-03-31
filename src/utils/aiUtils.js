@@ -1,5 +1,3 @@
-// src/utils/aiUtils.js - INTEGRACIÓN FINAL CON OPENAI
-
 import logger from './logger.js';
 import MenuItem from '../models/MenuItem.js';
 import OpenAI from 'openai'; 
@@ -12,83 +10,112 @@ const openai = new OpenAI({
 });
 
 /**
- * Esquema JSON CRÍTICO que el modelo debe devolver.
+ * Esquema de respuesta esperado por el bot.
  */
 const JSON_SCHEMA_OBJECT = {
-    items: {
-        type: "array",
-        description: "Lista de productos identificados en el pedido.",
-        items: {
-            type: "object",
-            properties: {
-                itemId: { type: "string", description: "ID de MongoDB del producto coincidente." }, 
-                quantity: { type: "integer", description: "Cantidad del ítem, debe ser 1 si no se especifica." },
-                notes: { type: "string", description: "Cualquier nota adicional (ej: sin cebolla, extra queso)." }
-            },
-            required: ["itemId", "quantity"]
+    items: [
+        { 
+            itemId: "ID_DE_24_CARACTERES", 
+            quantity: 1, 
+            notes: "opcional" 
         }
-    },
+    ],
     clienteInfo: {
-        type: "object",
-        description: "Información de contacto y envío.",
-        properties: {
-            // Campos críticos para el salto rápido:
-            nombre: { type: "string", description: "Nombre completo del cliente. Debe buscar 'a nombre de', 'mi nombre es', etc." },
-            direccion: { type: "string", description: "Dirección de entrega completa. Debe buscar patrones de dirección." },
-            metodoPago: { type: "string", description: "Método de pago (Efectivo, Transferencia, Tarjeta). Usa el valor identificado o 'Efectivo' si no se especifica." }
-        },
-        required: ["nombre", "direccion", "metodoPago"]
+        nombre: "",
+        direccion: "",
+        metodoPago: "Efectivo | Transferencia | Tarjeta | "
     }
 };
 
-
-/**
- * @desc Analiza texto libre usando OpenAI para devolver un objeto JSON estructurado.
- * @param {string} text - El texto libre del cliente.
- * @returns {Promise<Object>} Objeto con items y clienteInfo.
- */
 export const analizarPedidoConIA = async (text) => {
     try {
-        // --- 1. OBTENER LISTA DE PRODUCTOS ---
-        const menuItems = await MenuItem.find({}, 'nombre').lean(); 
-        const menuList = menuItems.map(item => `ID:${item._id} - Nombre:${item.nombre}`).join('\n');
+        // 1. Obtenemos los productos activos.
+        const menuItems = await MenuItem.find({ activo: true }).lean(); 
+        
+        if (menuItems.length === 0) {
+            logger.warn("[IA] El catálogo está vacío en la base de datos.");
+            return { items: [], clienteInfo: { nombre: "", direccion: "", metodoPago: "" } };
+        }
 
-        const systemPrompt = `Eres un asistente de pedidos de restaurantes, especializado en analizar texto libre y convertirlo a JSON. Tu tarea es la extracción.
-        
-        Instrucciones CRÍTICAS:
-        1. **PRIORIDAD ABSOLUTA:** Analiza primero el texto para extraer el 'nombre' y la 'direccion' del cliente. Busca las frases 'a nombre de', 'mi nombre es', o patrones de dirección.
-        2. EXTRACCIÓN DE PRODUCTOS: Para los productos, usa el 'itemId' que mejor coincida con el nombre en la lista.
-        3. OUTPUT: El output debe ser *ESTRICTAMENTE* un objeto JSON que se adhiera al esquema. Si un dato (nombre/dirección) no se encuentra, debes devolver el valor como una **cadena vacía ("")** o **null**, pero NUNCA OMITAS EL CAMPO.
-        
-           --- Menú disponible ---
-           ${menuList}
-           ------------------------
-           
-           ESQUEMA JSON REQUERIDO:
-           ${JSON.stringify(JSON_SCHEMA_OBJECT, null, 2)}`;
+        const menuList = menuItems.map(item => {
+            const idLargo = item._id.toString(); 
+            return `- PRODUCTO: "${item.nombre}" | ID_UNICO: ${idLargo}`;
+        }).join('\n');
+
+        // Log de depuración
+        console.log("--- CATÁLOGO ENVIADO A IA ---");
+        console.log(menuList);
+        console.log("-------------------------------");
+
+        const systemPrompt = `Eres el "Extractor Técnico" de Yu-K-Bot, un experto en pedidos de comida. 
+Tu función es convertir mensajes de clientes en el JSON estructurado solicitado.
+
+REGLAS DE ORO PARA EL ÉXITO:
+1. IDENTIFICACIÓN FLEXIBLE: Si el cliente dice "una bbq", "hamburguesa de bbq" o simplemente "bbq", relaciónalo con "Hamburguesa BBQ". Usa el sentido común para variaciones de nombre.
+2. ID OBLIGATORIO: El 'itemId' DEBE ser el ID_UNICO de 24 caracteres del catálogo. NUNCA inventes IDs.
+3. CANTIDAD: Si el usuario no dice cuántos, asume siempre 1.
+4. CLIENTE: Si el mensaje dice "Soy Santos" o "A nombre de Juan", extrae el nombre. Lo mismo para dirección.
+5. MÉTODO DE PAGO: Solo acepta "Efectivo", "Transferencia" o "Tarjeta".
+
+CATÁLOGO DISPONIBLE:
+${menuList}
+
+RESPONDE ÚNICAMENTE CON UN OBJETO JSON SIGUIENDO ESTE FORMATO:
+${JSON.stringify(JSON_SCHEMA_OBJECT, null, 2)}`;
 
         const response = await openai.chat.completions.create({
             model: "gpt-4o-mini", 
             messages: [
                 { role: "system", content: systemPrompt },
-                { role: "user", content: text }
+                { role: "user", content: `Mensaje del cliente: "${text}"` }
             ],
             response_format: { type: "json_object" }, 
+            temperature: 0, 
         });
 
         const jsonResponse = response.choices[0]?.message?.content;
         
+        // --- LOG DE RESPUESTA CRUDA ---
+        console.log("--- RESPUESTA CRUDA DE OPENAI ---");
+        console.log(jsonResponse);
+        console.log("---------------------------------");
+
         if (jsonResponse) {
             const parsedData = JSON.parse(jsonResponse);
-            logger.info('[IA Éxito] Datos de pedido estructurados.');
+
+            // FILTRO DE SEGURIDAD Y LIMPIEZA
+            if (parsedData.items && Array.isArray(parsedData.items)) {
+                parsedData.items = parsedData.items.filter(item => {
+                    if (!item.itemId) return false;
+                    
+                    const cleanId = String(item.itemId).trim();
+                    // Validamos que sea un Hexadecimal de 24 caracteres (formato MongoDB)
+                    const isValidId = /^[0-9a-fA-F]{24}$/.test(cleanId);
+                    
+                    if (!isValidId) {
+                        logger.warn(`[IA] ID inválido descartado: "${item.itemId}"`);
+                    } else {
+                        item.itemId = cleanId;
+                    }
+                    return isValidId;
+                });
+            } else {
+                parsedData.items = [];
+            }
+
+            // Asegurar que clienteInfo exista para evitar errores de undefined
+            if (!parsedData.clienteInfo) {
+                parsedData.clienteInfo = { nombre: "", direccion: "", metodoPago: "" };
+            }
+
+            logger.info('[IA Éxito] Pedido procesado y validado.');
             return parsedData;
         }
 
-        logger.warn('[IA Fallo] OpenAI no devolvió un JSON estructurado válido.');
-        return { items: [], clienteInfo: {} };
+        return { items: [], clienteInfo: { nombre: "", direccion: "", metodoPago: "" } };
 
     } catch (error) {
-        logger.error(`Error en la llamada a OpenAI: ${error.message}`);
-        return { items: [], clienteInfo: {} };
+        logger.error(`Error en analizarPedidoConIA: ${error.message}`);
+        return { items: [], clienteInfo: { nombre: "", direccion: "", metodoPago: "" } };
     }
 };

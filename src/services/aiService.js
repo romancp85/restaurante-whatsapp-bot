@@ -1,68 +1,46 @@
-// src/services/aiService.js - CÓDIGO CORREGIDO Y CON PROMPT MEJORADO
+// src/services/aiService.js - VERSIÓN UNIFICADA Y SEGURA
 
 import OpenAI from 'openai';
-import { getMenu } from './menuService.js';
+import MenuItem from '../models/MenuItem.js'; // Asegúrate que la ruta sea correcta
 import logger from '../utils/logger.js';
-import mongoose from 'mongoose'; // Necesaria para usar Types.ObjectId
 
-// Asegúrate de definir esta variable en tu archivo .env
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-
-// Inicialización del cliente de OpenAI
 const openai = new OpenAI({
-    apiKey: OPENAI_API_KEY,
+    apiKey: process.env.OPENAI_API_KEY,
 });
 
-/**
- * Analiza un mensaje de texto libre y extrae los ítems del menú solicitados.
- */
 export async function analizarPedidoConIA(textoPedido) {
-    if (!OPENAI_API_KEY) {
-        logger.warn('Clave de OpenAI no configurada. Saltando análisis de IA.');
-        return [];
-    }
-
     try {
-        const menu = await getMenu();
+        // 1. Obtener menú real (usando tu servicio actual)
+        const menuItems = await MenuItem.find({ activo: true }).lean(); 
+        const menuList = menuItems.map(item => `- PRODUCTO: "${item.nombre}" | USAR_ESTE_ID: ${item._id}`).join('\n');
+
+        const systemPrompt = `Eres el extractor de pedidos del restaurante.
+        REGLAS:
+        - Usa SOLO el ID de 24 caracteres de la lista.
+        - PROHIBIDO usar números como "1", "2".
+        - Si no hay coincidencia exacta, elige la opción más lógica.
         
-        // 🛑 MEJORA DEL CONTEXTO: Añadir más campos para que la IA haga mejores coincidencias
-        const catalogo = menu.map(p => ({
-            _id: p._id.toString(), 
-            nombre: p.nombre,
-            categoria: p.categoria,
-            palabras_clave: p.nombre.toLowerCase().split(' ').join(', ')
-        }));
-
-        const prompt = `
-        Eres un extractor de pedidos para un restaurante. Analiza el siguiente PEDIDO_DEL_CLIENTE y extrae la cantidad (qty) y el ID (itemId) de los ítems en el CATÁLOGO.
-
-        - Solo incluye ítems que coincidan con el catálogo.
-        - Si el cliente no especifica la cantidad, asume 'cantidad': 1.
-        - El valor de 'itemId' debe ser el string del _id del catálogo.
-        - El valor de 'cantidad' debe ser un número entero.
-
-        CATÁLOGO: ${JSON.stringify(catalogo)}
-
-        PEDIDO_DEL_CLIENTE: "${textoPedido}"
-        `;
+        MENÚ:
+        ${menuList}`;
 
         const response = await openai.chat.completions.create({
-            model: "gpt-3.5-turbo-0125",
+            model: "gpt-4o-mini", // <--- CAMBIADO A 4O-MINI
             messages: [
-                { role: "system", content: "Siempre responde ÚNICAMENTE con un objeto JSON en el formato {'items': [{'itemId': 'ID_PRODUCTO', 'cantidad': 1}, ...]}. No agregues comentarios ni texto adicional." },
-                { role: "user", content: prompt }
+                { role: "system", content: systemPrompt },
+                { role: "user", content: `Extrae los items de este pedido en JSON: "${textoPedido}"` }
             ],
-            response_format: { type: "json_object" }, 
-            temperature: 0, 
+            response_format: { type: "json_object" },
+            temperature: 0,
         });
 
-        const jsonText = response.choices[0].message.content;
-        const resultado = JSON.parse(jsonText);
-        
-        return Array.isArray(resultado.items) ? resultado.items : [];
+        const res = JSON.parse(response.choices[0].message.content);
+        let items = Array.isArray(res.items) ? res.items : [];
+
+        // 🛡️ FILTRO ANTI-ERROR "1"
+        return items.filter(item => /^[0-9a-fA-F]{24}$/.test(item.itemId));
 
     } catch (error) {
-        logger.error('Error al analizar pedido con IA o parsear JSON:', error.message);
-        return []; 
+        logger.error('Error en aiService:', error.message);
+        return [];
     }
 }
