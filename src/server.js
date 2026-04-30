@@ -91,9 +91,9 @@ mongoose.connect(process.env.MONGODB_URI)
     logger.info('MongoDB conectado - ¡Base de datos lista!');
     
     // 1. Ejecutar la creación de la DB
-    await crearMenuInicial();
-    await crearConfiguracionInicial();
-    await crearGlobalConfigInicial(); 
+    //await crearMenuInicial();
+    //await crearConfiguracionInicial();
+    //await crearGlobalConfigInicial(); 
 
     // 2. === INTEGRACIÓN DE RUTAS ===
     

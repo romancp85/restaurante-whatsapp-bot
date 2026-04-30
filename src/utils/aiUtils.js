@@ -1,121 +1,147 @@
+// src/utils/aiUtils.js
 import logger from './logger.js';
 import MenuItem from '../models/MenuItem.js';
 import OpenAI from 'openai'; 
 import dotenv from 'dotenv';
+import mongoose from 'mongoose';
 
 dotenv.config();
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-});
-
-/**
- * Esquema de respuesta esperado por el bot.
- */
-const JSON_SCHEMA_OBJECT = {
-    items: [
-        { 
-            itemId: "ID_DE_24_CARACTERES", 
-            quantity: 1, 
-            notes: "opcional" 
-        }
-    ],
-    clienteInfo: {
-        nombre: "",
-        direccion: "",
-        metodoPago: "Efectivo | Transferencia | Tarjeta | "
-    }
-};
-
-export const analizarPedidoConIA = async (text) => {
+export const analizarPedidoConIA = async (text, businessId, history = [], restauranteConfig = {}, lastProductDiscussed = null) => {
     try {
-        // 1. Obtenemos los productos activos.
-        const menuItems = await MenuItem.find({ activo: true }).lean(); 
-        
-        if (menuItems.length === 0) {
-            logger.warn("[IA] El catálogo está vacío en la base de datos.");
-            return { items: [], clienteInfo: { nombre: "", direccion: "", metodoPago: "" } };
+        const { 
+            nombreBot = "Mateo", 
+            rol = "Asistente Virtual",
+            personalidad = "conciso y profesional",
+            directivasIA = [] 
+        } = restauranteConfig;
+
+        // 🌟 CORRECCIÓN: Definimos bId para evitar el error "bId is not defined"
+        const bId = new mongoose.Types.ObjectId(businessId);
+
+        // 1. FILTRADO INTELIGENTE DEL CATÁLOGO (Mejorado)
+        // Limpiamos el texto de comas, puntos y signos para extraer palabras puras
+        const palabrasClave = text.toLowerCase()
+            .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "") 
+            .split(/\s+/)
+            .filter(p => p.length > 2);
+
+        if (lastProductDiscussed) palabrasClave.push(lastProductDiscussed.toLowerCase());
+
+        // Creamos un set de expresiones regulares para búsqueda parcial
+        const regexBusqueda = palabrasClave.map(k => new RegExp(k, 'i'));
+
+        let menuItems = await MenuItem.find({ 
+            businessId: bId, 
+            activo: true,
+            $or: [
+                { nombre: { $in: regexBusqueda } },
+                { categoria: { $in: regexBusqueda } },
+                { "modificadores.opciones.nombre": { $in: regexBusqueda } } // Busca también en ingredientes
+            ]
+        }).lean();
+
+        // 🌟 REGLA DE ORO: Si encontramos pocos productos, cargamos la categoría completa 
+        // de los productos encontrados para darle contexto a la IA.
+        if (menuItems.length > 0 && menuItems.length < 10) {
+            const categoriasEncontradas = [...new Set(menuItems.map(i => i.categoria))];
+            const complementosCategoria = await MenuItem.find({
+                businessId: bId,
+                activo: true,
+                categoria: { $in: categoriasEncontradas }
+            }).limit(15).lean();
+            
+            // Unimos y eliminamos duplicados por ID
+            const mapaItems = new Map();
+            [...menuItems, ...complementosCategoria].forEach(item => mapaItems.set(item._id.toString(), item));
+            menuItems = Array.from(mapaItems.values());
         }
 
-        const menuList = menuItems.map(item => {
-            const idLargo = item._id.toString(); 
-            return `- PRODUCTO: "${item.nombre}" | ID_UNICO: ${idLargo}`;
+        // Fallback total si sigue vacío
+        if (menuItems.length === 0) {
+            menuItems = await MenuItem.find({ businessId: bId, activo: true }).limit(15).lean();
+        }
+
+        logger.info(`[SaaS] Productos cargados para IA: ${menuItems.length} (${menuItems.map(i => i.nombre).join(', ')})`);
+        
+        // 2. CONSTRUCCIÓN DEL CATÁLOGO PARA LA IA
+        const menuSimplified = menuItems.map(item => {
+            const mods = item.modificadores?.map(m => 
+                `${m.nombre} (Máx: ${m.maximo}): ${m.opciones.map(o => o.nombre).join(', ')}`
+            ).join(' | ');
+            return `- PRODUCTO: "${item.nombre}" | PRECIO: $${item.precioBase} ${mods ? `| MODS: ${mods}` : ''}`;
         }).join('\n');
 
-        // Log de depuración
-        console.log("--- CATÁLOGO ENVIADO A IA ---");
-        console.log(menuList);
-        console.log("-------------------------------");
+        // 3. ENSAMBLAJE DE DIRECTIVAS DEL NEGOCIO
+        const reglasDelNegocio = directivasIA.length > 0 
+            ? directivasIA.map((r, i) => `${i + 1}. ${r}`).join('\n')
+            : "Atiende con amabilidad y procesa el pedido de forma estándar.";
 
-        const systemPrompt = `Eres el "Extractor Técnico" de Yu-K-Bot, un experto en pedidos de comida. 
-Tu función es convertir mensajes de clientes en el JSON estructurado solicitado.
+        // 4. CONSTRUCCIÓN DEL SYSTEM PROMPT (ÚNICO Y LIMPIO)
+        const systemPrompt = `Eres ${nombreBot}, el ${rol} del negocio. Tu personalidad es ${personalidad}.
 
-REGLAS DE ORO PARA EL ÉXITO:
-1. IDENTIFICACIÓN FLEXIBLE: Si el cliente dice "una bbq", "hamburguesa de bbq" o simplemente "bbq", relaciónalo con "Hamburguesa BBQ". Usa el sentido común para variaciones de nombre.
-2. ID OBLIGATORIO: El 'itemId' DEBE ser el ID_UNICO de 24 caracteres del catálogo. NUNCA inventes IDs.
-3. CANTIDAD: Si el usuario no dice cuántos, asume siempre 1.
-4. CLIENTE: Si el mensaje dice "Soy Santos" o "A nombre de Juan", extrae el nombre. Lo mismo para dirección.
-5. MÉTODO DE PAGO: Solo acepta "Efectivo", "Transferencia" o "Tarjeta".
+        OBJETIVO: Convertir el mensaje del cliente en un JSON basado ÚNICAMENTE en el catálogo.
 
-CATÁLOGO DISPONIBLE:
-${menuList}
+        🌟 DIRECTIVAS ESPECÍFICAS DE ESTE NEGOCIO (PRIORIDAD ALTA):
+        ${reglasDelNegocio}
 
-RESPONDE ÚNICAMENTE CON UN OBJETO JSON SIGUIENDO ESTE FORMATO:
-${JSON.stringify(JSON_SCHEMA_OBJECT, null, 2)}`;
+        REGLAS TÉCNICAS (INMUTABLES):
+            1. CONTEXTO: Estás hablando de: "${lastProductDiscussed || 'nada aún'}". Úsalo para referencias como "ese", "el mismo" o "sí".
+            2. ATRIBUCIÓN DE PRODUCTO: Cualquier detalle, extra o modificación mencionado junto a un producto (ej: "Margarita con mucho tomate") DEBE guardarse estrictamente dentro del objeto de ese producto (en 'modifiers' si hay similitud semántica con el catálogo o en 'notes' si es una instrucción). NUNCA uses 'notasCocina' global para detalles de un producto específico.
+            3. NOTAS GLOBALES (extractedData): Usa 'notasCocina' o 'notasPago' ÚNICAMENTE para instrucciones que afecten a todo el pedido o a la entrega (ej: "tocar timbre fuerte", "traer cambio de 500", "sin cubiertos").
+            4. RESPUESTA HUMANA (waiterMessage): Siempre debe tener una estructura de confirmación positiva primero y aclaración después. Ejemplo: "He anotado tu [Producto X]. Lamentablemente no contamos con [Producto Y]...".
+            5. MAPEO SEMÁNTICO: Si el detalle del usuario coincide por similitud con un modificador (ej: "tomate" -> "Tomate Cherry"), selecciónalo en 'modifiers'. Si es una instrucción de preparación (ej: "bien cocido"), úsalo en 'notes' del ítem.
+            6. UNICIDAD: El array 'items' debe contener solo lo solicitado en el ÚLTIMO mensaje. No repitas lo ya confirmado.
+            7. IDENTIDAD: Extrae nombres de personas reales. NUNCA uses nombres de productos como nombres de clientes.
 
+        CATÁLOGO DISPONIBLE:
+        ${menuSimplified}
+
+        JSON FORMAT (ESTRICTO):
+        {
+          "action": "ADD | REMOVE", // 🌟 NUEVO: Indica si el usuario quiere agregar o quitar        
+          "items": [{ 
+              "productName": "Nombre exacto del catálogo", 
+              "quantity": 1, 
+              "modifiers": [], 
+              "notes": "Instrucción de preparación o null" 
+          }],
+          "status": "COMPLETO | AMBIGUO | NO_DISPONIBLE",
+          "waiterMessage": "Respuesta humana breve",
+          "extractedData": {
+            "nombre": "string o null",
+            "direccion": "string o null",
+            "metodoPago": "EFECTIVO | TRANSFERENCIA | TARJETA | null",
+            "modoEntrega": "DELIVERY | PICKUP | null",
+            "notasPago": "Instrucción de pago (ej: billete de 500)",
+            "notasCocina": "Instrucción general (ej: sin cubiertos)"
+          }
+        }`;
+
+        // 5. LLAMADA A GPT-4o-mini
         const response = await openai.chat.completions.create({
-            model: "gpt-4o-mini", 
+            model: "gpt-4o-mini",
             messages: [
                 { role: "system", content: systemPrompt },
-                { role: "user", content: `Mensaje del cliente: "${text}"` }
+                ...history.slice(-6),
+                { role: "user", content: text }
             ],
-            response_format: { type: "json_object" }, 
-            temperature: 0, 
+            response_format: { type: "json_object" },
+            temperature: 0,
         });
-
-        const jsonResponse = response.choices[0]?.message?.content;
+    
+        const resJSON = JSON.parse(response.choices[0].message.content);
         
-        // --- LOG DE RESPUESTA CRUDA ---
-        console.log("--- RESPUESTA CRUDA DE OPENAI ---");
-        console.log(jsonResponse);
-        console.log("---------------------------------");
-
-        if (jsonResponse) {
-            const parsedData = JSON.parse(jsonResponse);
-
-            // FILTRO DE SEGURIDAD Y LIMPIEZA
-            if (parsedData.items && Array.isArray(parsedData.items)) {
-                parsedData.items = parsedData.items.filter(item => {
-                    if (!item.itemId) return false;
-                    
-                    const cleanId = String(item.itemId).trim();
-                    // Validamos que sea un Hexadecimal de 24 caracteres (formato MongoDB)
-                    const isValidId = /^[0-9a-fA-F]{24}$/.test(cleanId);
-                    
-                    if (!isValidId) {
-                        logger.warn(`[IA] ID inválido descartado: "${item.itemId}"`);
-                    } else {
-                        item.itemId = cleanId;
-                    }
-                    return isValidId;
-                });
-            } else {
-                parsedData.items = [];
-            }
-
-            // Asegurar que clienteInfo exista para evitar errores de undefined
-            if (!parsedData.clienteInfo) {
-                parsedData.clienteInfo = { nombre: "", direccion: "", metodoPago: "" };
-            }
-
-            logger.info('[IA Éxito] Pedido procesado y validado.');
-            return parsedData;
+        // Limpieza de seguridad
+        if (resJSON.items) {
+            resJSON.items = resJSON.items.filter(i => i.productName && i.productName !== "null");
         }
 
-        return { items: [], clienteInfo: { nombre: "", direccion: "", metodoPago: "" } };
+        return resJSON;
 
     } catch (error) {
-        logger.error(`Error en analizarPedidoConIA: ${error.message}`);
-        return { items: [], clienteInfo: { nombre: "", direccion: "", metodoPago: "" } };
+        logger.error(`Error en IA Motor: ${error.message}`);
+        return { items: [], status: "ERROR", waiterMessage: "Disculpa, ¿puedes repetirlo?" };
     }
 };

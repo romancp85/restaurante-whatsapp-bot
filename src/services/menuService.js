@@ -14,31 +14,28 @@ const TTL = 60_000; // 60 segundos (Puedes cambiar esto)
  * @param {string} clientId ID del restaurante (para caché multi-cliente).
  * @returns {Promise<Array>} Lista de objetos de menú.
  */
-const getMenu = async (clientId = 'default') => {
-    
-    const key = `menu_${clientId}`;
-    const cached = CACHE.get(key);
+const getMenu = async (businessId) => {
+    if (!businessId) return [];
 
-    // 1. Verificar la caché en memoria
-    if (cached && Date.now() - cached.timestamp < TTL) {
-        logger.info('Cache hit: Devolviendo menú desde memoria.');
-        return cached.data; 
-    }
+    const cacheKey = `menu_${businessId}`; // 🛑 Definir la llave de caché
+    const cached = CACHE.get(cacheKey);
+    if (cached) return cached;
 
     try {
-        // 2. CONSULTA DIRECTA CON DOBLE FILTRO: Activo (permanente) Y Disponible (hoy)
-        // 🛑 FILTRO FINAL CORREGIDO 🛑
-        const menu = await MenuItem.find({ activo: true, disponible: true }).lean();
+        const diaActual = new Date().getDay();
+        const menu = await MenuItem.find({ 
+            businessId: businessId,
+            activo: true, 
+            disponible: true,
+            diasDisponibles: diaActual 
+        }).lean();
         
-        // 3. Almacenar el resultado en caché
-        CACHE.set(key, { data: menu, timestamp: Date.now() }); 
-        logger.info('Cache miss: Menú recargado desde DB y cacheado.');
-        
+        CACHE.set(cacheKey, menu);
+        setTimeout(() => CACHE.delete(cacheKey), TTL);
+
         return menu;
-        
     } catch (error) {
-        logger.error('Error cargando menú desde MongoDB:', error.message);
-        // En caso de error de DB, retornamos un array vacío
+        logger.error('Error cargando menú multi-tenant:', error.message);
         return [];
     }
 };

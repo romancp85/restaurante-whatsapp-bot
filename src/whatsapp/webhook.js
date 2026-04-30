@@ -1,358 +1,430 @@
-// src/whatsapp/webhook.js - VERSIÓN COMPLETA ORIGINAL (300+ LÍNEAS) - REPARADA
+// src/whatsapp/webhook.js
 import express from 'express';
-import { getOrCreateCart, updateCart, addItemToCart, removeItemFromCart } from './cartUtils.js'; 
-import { sendMessage, sendMenu, sendCartSummary, sendPaymentMethodOptions } from './utils.js';
-import { getGlobalConfig } from '../services/configServiceDB.js'; 
-import { processFinalOrder } from './orderProcessor.js';
+import { getOrCreateCart, updateCart, addItemToCart } from './cartUtils.js'; 
+import { sendMessage, sendMenu, sendCartSummary, sendPaymentMethodOptions, formatPrice } from './utils.js';
 import { analizarPedidoConIA } from '../utils/aiUtils.js'; 
+import { validarPedido, calcularTotalesFinales } from '../services/orderValidator.js'; 
+import Restaurante from '../models/Restaurante.js';
+import { processFinalOrder } from './orderProcessor.js';
 import logger from '../utils/logger.js';
-import dotenv from 'dotenv';
-
-dotenv.config();
 
 const router = express.Router();
-const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN; 
 
-// ----------------------------------------------------------------------
-// FUNCIONES AUXILIARES PARA MENSAJES
-// ----------------------------------------------------------------------
-
-const enviarTexto = async (userId, texto) => {
-    await sendMessage(userId, { type: "text", text: { body: texto } });
+// --- HELPERS ---
+const enviarTexto = async (userId, texto, auth) => {
+    await sendMessage(userId, { type: "text", text: { body: texto } }, auth);
 };
 
-/**
- * Procesa el mensaje de un cliente en función del estado de la conversación.
- */
-async function handleStateFlow(userId, text, cart) {
-    const currentState = cart.conversationState;
-
-    switch (currentState) {
-        
-        case 'INICIO':
-        case 'EMPEZAR':
-            await sendMenu(userId);
-            break;
-
-        case 'MOSTRANDO_MENU':
-            const menuSelection = parseInt(text);
-            const selectedItem = cart.tempData.menuMap?.find(item => item.index === menuSelection);
-
-            if (selectedItem) {
-                cart.tempData.currentItemId = selectedItem.itemId;
-                cart.tempData.itemName = selectedItem.nombre;
-                await updateCart(userId, { tempData: cart.tempData, conversationState: 'PREGUNTANDO_CANTIDAD' });
-                await enviarTexto(userId, `¿Cuántas unidades de *${selectedItem.nombre}* deseas? (Solo el número)`);
-            } else {
-                // 🛑 CAMBIO AQUÍ: Si no es un número del menú, intentamos con IA
-                // En lugar de enviar el error aquí, dejamos que el flujo continúe hacia handleAICheck
-                return "TRY_AI"; 
-            }
-            break;
-        
-        case 'PREGUNTANDO_CANTIDAD':
-            const quantity = parseInt(text);
-            if (quantity > 0 && cart.tempData.currentItemId) {
-                const itemId = cart.tempData.currentItemId;
-                // LLAMADA CRÍTICA: Se envía userId para mantener el carrito correcto
-                const result = await addItemToCart(userId, cart, itemId, quantity);
-                
-                if (result.success) {
-                    cart.tempData = {};
-                    await updateCart(userId, { tempData: {}, conversationState: 'EN_CARRITO' });
-                    await enviarTexto(userId, `¡Añadido! *${result.name}* (x${quantity}). Escribe *CARRITO* para revisar o *MENÚ* para seguir agregando.`);
-                } else {
-                    // Mantenemos tus validaciones de stock originales
-                    let errorMsg = "No pudimos añadir el producto.";
-                    if (result.reason === 'SIN_STOCK') {
-                        errorMsg = `❌ *${result.name}*: Solo quedan ${result.available || 0} unidades disponibles. No se añadió.`;
-                    } else if (result.reason === 'NO_DISPONIBLE') {
-                        errorMsg = `❌ *${result.name}*: Está agotado por hoy.`;
-                    } else if (result.reason === 'INACTIVO') {
-                        errorMsg = `❌ *${result.name}*: Ya no está en nuestro menú.`;
-                    }
-                    await enviarTexto(userId, errorMsg);
-                }
-            } else {
-                await enviarTexto(userId, "Por favor, ingresa una cantidad válida (solo números).");
-            }
-            break;
-
-        case 'EN_CARRITO':
-            await enviarTexto(userId, "Escribe *MENÚ* para agregar más productos o *FINALIZAR* para continuar.");
-            break;
-
-        case 'PREGUNTANDO_NOMBRE':
-            const nombre = text.trim();
-            if (nombre.length < 3) {
-                await enviarTexto(userId, "Por favor, escribe tu nombre completo para el pedido.");
-            } else {
-                cart.tempData.name = nombre;
-                await updateCart(userId, { tempData: cart.tempData, conversationState: 'PREGUNTANDO_DIRECCION' });
-                await enviarTexto(userId, `¡Genial, ${nombre}! ¿Cuál es la *dirección completa* para la entrega?`);
-            }
-            break;
-
-            // Si el usuario escribió algo como "ya la tienes", 
-            // y efectivamente YA HAY una dirección en el carrito...
-            if (cart.tempData.address && cart.tempData.address.length > 5) {
-            await updateCart(userId, { conversationState: 'PREGUNTANDO_PAGO' });
-            return await sendPaymentMethods(userId); // Saltamos al pago
-    }
+// --- MOTOR DE ELIMINACIÓN ---
+const handleRemoveItem = async (userId, businessId, index, cart, auth) => {
+    const itemIdx = parseInt(index) - 1;
     
-            // Si no la tiene, entonces sí guardamos lo que escribió el usuario
-            await updateCart(userId, { 
-            tempData: { ...cart.tempData, address: text }, 
-            conversationState: 'PREGUNTANDO_PAGO' 
+    if (cart.items && cart.items[itemIdx]) {
+        const removedName = cart.items[itemIdx].nombre;
+        const newItems = cart.items.filter((_, i) => i !== itemIdx);
+        const carritoVacio = newItems.length === 0;
 
-    });
-            await sendPaymentMethods(userId);
-            break;
+        // 🌟 CORRECCIÓN: Si el carrito se vacía, limpiamos la memoria de la IA
+        const nuevosTempData = { ...cart.tempData };
+        if (carritoVacio) {
+            nuevosTempData.history = []; // Borramos el historial de charla
+            nuevosTempData.lastProductDiscussed = null; // Borramos el último producto
+            nuevosTempData.menuMap = []; // Opcional: Limpiamos mapa numérico
+        }
 
-        case 'PREGUNTANDO_DIRECCION':
-            const entradaDireccion = text.trim();
-            // 🛡️ Si ya tenemos dirección y el usuario dice "ya la tienes" o algo corto
-            if (cart.tempData.address && (entradaDireccion.toLowerCase().includes("ya") || entradaDireccion.length < 5)) {
-                await updateCart(userId, { conversationState: 'PREGUNTANDO_PAGO' });
-                return await sendPaymentMethodOptions(userId); 
-            }
-            
-            // Si no la tenemos, guardamos lo que escribió
-            cart.tempData.address = entradaDireccion;
-            await updateCart(userId, { 
-                tempData: cart.tempData, 
-                conversationState: 'PREGUNTANDO_PAGO' 
-            });
-            await sendPaymentMethodOptions(userId);
-            break;
+        await updateCart(userId, businessId, { 
+            items: newItems,
+            conversationState: carritoVacio ? 'INICIO' : cart.conversationState,
+            tempData: nuevosTempData // Aplicamos la limpieza
+        });
 
-        case 'PREGUNTANDO_PAGO':
-            await sendPaymentMethodOptions(userId);
-            await enviarTexto(userId, "Por favor, selecciona una opción con los botones.");
-            break;
-            
-        case 'CONFIRMANDO_PEDIDO':
-            await enviarTexto(userId, "Por favor, escribe *CONFIRMAR* para procesar tu pedido o *CARRITO* para revisar antes de finalizar.");
-            break;
+        await enviarTexto(userId, `✅ Eliminado: *${removedName}*.`, auth);
+
+        if (carritoVacio) {
+            await enviarTexto(userId, "🛒 Tu carrito ahora está vacío.\n\n¿Te gustaría ver el *MENÚ* nuevamente para elegir algo más? 🍕", auth);
+        } else {
+            const updatedCart = { ...cart, items: newItems, tempData: nuevosTempData };
+            await sendCartSummary(userId, updatedCart, businessId, auth);
+        }
+    } else {
+        // Si intenta quitar algo de un carrito vacío o índice inexistente
+        await enviarTexto(userId, `❌ No encontré el producto #${index}.`, auth);
         
-        case 'ESPERANDO_AGENTE':
-            logger.info(`Cliente ${userId} en Handoff. Ignorando mensaje.`);
-            break;
-
-        default:
-            await sendMenu(userId);
-            break;
+        // Si el carrito ya estaba vacío de antes, recordamos el menú
+        if (cart.items.length === 0) {
+            await enviarTexto(userId, "Tu carrito está vacío. Escribe *MENÚ* para ver nuestros productos. 🍕", auth);
+        }
     }
+};
+
+// --- CHECKOUT INTELIGENTE (Slot-Filling) ---
+const ejecutarCheckoutInteligente = async (userId, businessId, cart, auth, restaurante) => {
+    const { tempData } = cart;
+    const { ofreceDelivery, ofrecePickup } = restaurante.configuracion || { ofreceDelivery: true, ofrecePickup: true };
+
+    // 1. MODO DE ENTREGA
+    if (!tempData.deliveryMode) {
+        if (ofreceDelivery && !ofrecePickup) {
+            tempData.deliveryMode = 'DELIVERY';
+            await updateCart(userId, businessId, { tempData: { ...tempData, deliveryMode: 'DELIVERY' } });
+        } else if (!ofreceDelivery && ofrecePickup) {
+            tempData.deliveryMode = 'PICKUP';
+            await updateCart(userId, businessId, { tempData: { ...tempData, deliveryMode: 'PICKUP' } });
+        } else {
+            await updateCart(userId, businessId, { conversationState: 'PREGUNTANDO_MODO_ENTREGA' });
+            await sendMessage(userId, {
+                type: "interactive",
+                interactive: {
+                    type: "button",
+                    body: { text: "¿Cómo gusta recibir su pedido?" },
+                    action: {
+                        buttons: [
+                            { type: "reply", reply: { id: "MODE_DELIVERY", title: "A domicilio 🛵" } },
+                            { type: "reply", reply: { id: "MODE_PICKUP", title: "Recoger en tienda 🛍️" } }
+                        ]
+                    }
+                }
+            }, auth);
+            return;
+        }
+    }
+
+    // 2. NOMBRE (Evita nombres de productos como nombres de clientes)
+    if (!tempData.name || tempData.name === 'null' || tempData.name.length < 2) {
+        await updateCart(userId, businessId, { conversationState: 'PREGUNTANDO_NOMBRE' });
+        await enviarTexto(userId, "¡Perfecto! ¿A nombre de quién registro el pedido?", auth);
+        return;
+    }
+
+    // 3. DIRECCIÓN
+    if (tempData.deliveryMode === 'DELIVERY' && !tempData.address) {
+        await updateCart(userId, businessId, { conversationState: 'PREGUNTANDO_DIRECCION' });
+        await enviarTexto(userId, "Para el envío, ¿cuál es tu dirección exacta? (O envía tu ubicación GPS 📍)", auth);
+        return;
+    }
+
+    // 4. PAGO
+    if (!tempData.paymentMethod) {
+        await updateCart(userId, businessId, { conversationState: 'PREGUNTANDO_PAGO' });
+        await sendPaymentMethodOptions(userId, businessId, auth);
+        return;
+    }
+
+    // 5. RESUMEN FINAL
+    await updateCart(userId, businessId, { conversationState: 'CONFIRMANDO_PEDIDO' });
+    cart.conversationState = 'CONFIRMANDO_PEDIDO'; // Actualización inmediata en memoria
+    
+    await enviarTexto(userId, `✅ ¡Excelente! Ya tengo todos tus datos. Aquí tienes el resumen final para confirmar:`, auth);
+    await sendCartSummary(userId, cart, businessId, auth);
+};
+
+// --- PORTERO NIVEL 1: COMANDOS ---
+const manejarPorteroNivel1 = async (text, userId, businessId, auth, cart, restaurante) => {
+    const normalizedText = text.toUpperCase().trim();
+    const esComandoMenu = ['MENU', 'MENÚ', 'CARTA'].includes(normalizedText);
+    const esHolaCorto = normalizedText.length < 10 && normalizedText.includes('HOLA');
+    const frasesAfirmativas = ['SI', 'SÍ', 'POR FAVOR', 'DALE', 'OK', 'ACEPTO'];
+    const esPreguntaMenu = ['CUALES TIENES', 'QUE HAY', 'OPCIONES', 'QUE TIENEN', 'VER MENU'].some(f => normalizedText.includes(f));
+
+    if (esComandoMenu || esHolaCorto) {
+        if (cart.items && cart.items.length > 0) return false; 
+        await updateCart(userId, businessId, { 
+            tempData: { ...cart.tempData, deliveryMode: null, paymentMethod: null, name: null, orderNotes: null, address: null },
+            conversationState: 'INICIO' 
+        });
+        await sendMenu(userId, businessId, auth);
+        return true;
+    }
+
+
+    if (esPreguntaMenu) {
+    await sendMenu(userId, businessId, auth);
+    return true;
 }
 
-/**
- * handleAICheck optimizada para asegurar que el carrito se actualice en la DB.
- */
-async function handleAICheck(userId, text, cart) {
+    // 🌟 NUEVO: INTERCEPTOR DE NÚMEROS (Ej: "2", "2 y 5", "1,3")
+    const numerosEncontrados = normalizedText.match(/\d+/g); 
+    if (numerosEncontrados && cart.tempData.menuMap && !normalizedText.includes('QUITAR')) {
+        let agregados = [];
+        for (const num of numerosEncontrados) {
+            const mapping = cart.tempData.menuMap.find(m => m.index === parseInt(num));
+            if (mapping) {
+                // Añadimos al carrito usando la lógica existente
+                await addItemToCart(userId, businessId, { 
+                    itemId: mapping.itemId, 
+                    quantity: 1, 
+                    notas: "" 
+                });
+                agregados.push(mapping.nombre);
+            }
+        }
+        if (agregados.length > 0) {
+            await enviarTexto(userId, `✅ Añadido: *${agregados.join(', ')}*.\n\nEscribe *CARRITO* para revisar o sigue pidiendo.`, auth);
+            return true;
+        }
+    }
+
+    if (frasesAfirmativas.includes(normalizedText) && cart.items.length === 0) {
+        await sendMenu(userId, businessId, auth);
+        return true;
+    }
+
+    if (normalizedText === 'CARRITO') {
+        await sendCartSummary(userId, cart, businessId, auth);
+        return true;
+    }
+
+    if (normalizedText.startsWith('QUITAR')) {
+        const match = normalizedText.match(/QUITAR\s+(\d+)/);
+
+        // Si el carrito está vacío, no tiene sentido intentar quitar
+        if (cart.items.length === 0) {
+            await enviarTexto(userId, "Tu carrito ya está vacío. 🛒", auth);
+            await updateCart(userId, businessId, { conversationState: 'INICIO' });
+            return true;
+        }
+
+        if (match) {
+            await handleRemoveItem(userId, businessId, match[1], cart, auth);
+        } else {
+            await updateCart(userId, businessId, { conversationState: 'WAITING_FOR_REMOVAL' });
+            await enviarTexto(userId, "¿Qué número de producto desea quitar? (Ej: *1*)", auth);
+        }
+        return true;
+    }
+
+    if (normalizedText === 'FINALIZAR' || normalizedText === 'PAGAR') {
+        if (!cart.items || cart.items.length === 0) {
+            await enviarTexto(userId, "Su carrito está vacío. 🛒", auth);
+            return true;
+        }
+        await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante);
+        return true;
+    }
+    return false;
+};
+
+// --- PORTERO NIVEL 2: IA (VERSION PROCESADOR DE INTENCIONES) ---
+async function handleAICheck(userId, text, cart, businessId, auth, restauranteConfig) {
     try {
-        if (!text) return "NO_ITEMS";
+        const history = cart.tempData.history || [];
+        const lastProduct = cart.tempData.lastProductDiscussed || null;
 
-        const aiResponse = await analizarPedidoConIA(text); 
-        const itemsAñadir = (aiResponse && Array.isArray(aiResponse.items)) ? aiResponse.items : [];
-        const clienteInfo = aiResponse?.clienteInfo || {}; 
+        const aiResponse = await analizarPedidoConIA(text, businessId, history, restauranteConfig, lastProduct); 
 
-        if (itemsAñadir.length === 0) return "NO_ITEMS";
-        
-        // 1. Obtener carrito actual
-        const currentCart = await getOrCreateCart(userId);
-        
-        const results = [];
-        for (const item of itemsAñadir) {
-            const result = await addItemToCart(userId, currentCart, item.itemId, item.quantity); 
-            results.push(result);
-        } 
-        
-        const successfulItems = results.filter(r => r.success);
-        if (successfulItems.length === 0) return "NO_ITEMS";
+        console.log("-----------------------------------------");
+        logger.info(`[DEBUG IA] Respuesta Mateo: ${JSON.stringify(aiResponse, null, 2)}`);
+        console.log("-----------------------------------------");
 
-        // Preparar mensaje de éxito
-        const addedNames = successfulItems.map(r => `${r.quantity}x ${r.name}`).join(', ');
-        let feedbackMessage = `✅ *¡Entendido!* Se añadieron: ${addedNames}.\n`;
+        const limpiar = (val) => (val && val !== 'null' && val !== 'undefined' && val !== '') ? val.trim() : null;
 
-        // CASO A: Pedido Rápido (Tiene nombre y dirección)
-        if (clienteInfo?.nombre && clienteInfo?.direccion) {
+        // 1. CAPTURA DE DATOS LOGÍSTICOS
+        if (aiResponse.extractedData) {
+            const { nombre, direccion, metodoPago, modoEntrega, notasPago, notasCocina } = aiResponse.extractedData;
+            const nLogistica = limpiar(notasPago);
+            const nCocina = limpiar(notasCocina);
+            const notasUnicas = new Set();
+            if (nLogistica) notasUnicas.add(nLogistica);
+            if (nCocina) notasUnicas.add(nCocina);
+            const notasOrdenConsolidadas = Array.from(notasUnicas).join(' | ');
+
+            const actualizaciones = {
+                name: limpiar(nombre) || cart.tempData.name,
+                address: limpiar(direccion) || cart.tempData.address,
+                deliveryMode: limpiar(modoEntrega) || cart.tempData.deliveryMode,
+                paymentMethod: metodoPago ? (metodoPago.charAt(0).toUpperCase() + metodoPago.slice(1).toLowerCase()) : cart.tempData.paymentMethod,
+                orderNotes: notasOrdenConsolidadas || cart.tempData.orderNotes
+            };
+
+            await updateCart(userId, businessId, { tempData: { ...cart.tempData, ...actualizaciones } });
+            cart.tempData = { ...cart.tempData, ...actualizaciones };
+        }
+
+        // 🌟 2. MANEJO DE ESTADOS (BLOQUEO INTELIGENTE)
+        // Solo bloqueamos si el estado es negativo Y NO HAY ITEMS para procesar.
+        const tieneItemsAI = aiResponse.items && aiResponse.items.length > 0;
+        const esEstadoNegativo = ['AMBIGUO', 'INCOMPLETO', 'NO_DISPONIBLE'].includes(aiResponse.status);
+
+        if (esEstadoNegativo && !tieneItemsAI) {    
+            const updatedHistory = [...history, { role: "user", content: text }, { role: "assistant", content: aiResponse.waiterMessage }].slice(-6);
+            await updateCart(userId, businessId, { tempData: { ...cart.tempData, history: updatedHistory } });
+            await enviarTexto(userId, aiResponse.waiterMessage, auth);
+            return "AI_HANDLED_STOP"; 
+        }
+
+        // 3. PROCESADOR DE ACCIONES (ADD vs REMOVE)
+        const action = aiResponse.action || "ADD";
+
+        if (action === "REMOVE") {
+            // ... (Tu lógica de REMOVE se mantiene igual, ya que funciona bien)
+            let itemsEnCarrito = [...cart.items];
+            let borrados = [];
+            for (const itemAI of aiResponse.items) {
+                const idx = itemsEnCarrito.findIndex(i => i.nombre.toLowerCase().includes(itemAI.productName.toLowerCase()));
+                if (idx > -1) {
+                    const cantARemover = itemAI.quantity || 1;
+                    const cantActual = itemsEnCarrito[idx].cantidad;
+                    if (cantARemover >= cantActual) {
+                        borrados.push(itemsEnCarrito[idx].nombre);
+                        itemsEnCarrito.splice(idx, 1);
+                    } else {
+                        itemsEnCarrito[idx].cantidad -= cantARemover;
+                        borrados.push(`${cantARemover} ${itemsEnCarrito[idx].nombre}`);
+                    }
+                }
+            }
+            if (borrados.length > 0) {
+                const carritoVacio = itemsEnCarrito.length === 0;
+                await updateCart(userId, businessId, { items: itemsEnCarrito, conversationState: carritoVacio ? 'INICIO' : cart.conversationState, tempData: carritoVacio ? { ...cart.tempData, history: [] } : cart.tempData });
+                await enviarTexto(userId, `✅ He quitado: *${borrados.join(', ')}*.`, auth);
+                if (carritoVacio) await enviarTexto(userId, "🛒 Tu carrito ahora está vacío. ¿Quieres ver el *MENÚ*? 🍕", auth);
+                else await sendCartSummary(userId, { ...cart, items: itemsEnCarrito }, businessId, auth);
+                return "AI_REMOVE_SUCCESS";
+            }
+            return "AI_REMOVE_FAIL";
+
+        } else {
+            // --- ACCIÓN: ADD (CON MANEJO DE ÉXITO PARCIAL) ---
+            const itemsValidados = await validarPedido(aiResponse.items, businessId);
+
+            // Si después de validar no quedó nada (Ej: solo pidió la Prohibida)
+            if (!itemsValidados || itemsValidados.length === 0) {
+                await enviarTexto(userId, `${aiResponse.waiterMessage}\n\n👉 Escribe *MENÚ* para ver lo disponible.`, auth);
+                await updateCart(userId, businessId, { tempData: { ...cart.tempData, lastProductDiscussed: null } });
+                return "NO_MATCH";
+            }
+
+            // 🌟 Si había una advertencia (NO_DISPONIBLE) pero sí hay items válidos:
+            if (esEstadoNegativo) {
+                await enviarTexto(userId, aiResponse.waiterMessage, auth);
+            }
+
+            // Agregamos lo válido al carrito
+            for (const item of itemsValidados) {
+                await addItemToCart(userId, businessId, item);
+            }
+
+            const updatedHistory = [...history, { role: "user", content: text }, { role: "assistant", content: aiResponse.waiterMessage }].slice(-6);
             
-            // 🚩 LA CLAVE: ¿Tenemos método de pago real de la IA?
-            const tienePago = clienteInfo.metodoPago && clienteInfo.metodoPago.trim() !== "";
-            
-            /// Actualizamos el carrito SIN borrar lo que ya existía
-            await updateCart(userId, { 
-                tempData: {
-                    ...currentCart.tempData,
-                    // Si la IA no detectó nombre/dirección ahora, mantenemos lo que ya estaba
-                    name: clienteInfo.nombre || currentCart.tempData.name,
-                    address: clienteInfo.direccion || currentCart.tempData.address,
-                    paymentMethod: tienePago ? clienteInfo.metodoPago : currentCart.tempData.paymentMethod
-                }, 
-                conversationState: tienePago ? 'CONFIRMANDO_PEDIDO' : 'PREGUNTANDO_PAGO' 
-            });
+            // LÓGICA FAST-TRACK
+            const { name, paymentMethod, deliveryMode, address } = cart.tempData;
+            const pedidoListo = !!(name && paymentMethod && deliveryMode && (deliveryMode === 'PICKUP' || address));
 
-            const finalCart = await getOrCreateCart(userId);
-
-            if (!tienePago) {
-                // 1. Informamos lo que ya capturamos
-                await enviarTexto(userId, `${feedbackMessage}\n📍 *Dirección:* ${clienteInfo.direccion}\n👤 *Nombre:* ${clienteInfo.nombre}`);
-                // 2. Disparamos tus botones de pago (Asegúrate de que el nombre de la función sea correcto)
-                await sendPaymentMethodOptions(userId);
+            if (pedidoListo) {
+                await updateCart(userId, businessId, { 
+                    tempData: { ...cart.tempData, history: updatedHistory, lastProductDiscussed: itemsValidados[0].nombre },
+                    conversationState: 'CONFIRMANDO_PEDIDO' 
+                });
+                await enviarTexto(userId, `✅ *¡Todo listo!* Ya tengo tus datos.\n👉 Escribe *CONFIRMAR* para pedir ya o *CARRITO* para revisar.`, auth);
+                return "AI_SUCCESS_FAST_TRACK";
             } else {
-                // Si ya especificó el pago (ej: "pago con tarjeta"), vamos directo al resumen
-                await sendCartSummary(userId, finalCart);
-                //await enviarTexto(userId, `${feedbackMessage}\n🥳 *¡Pedido Rápido!* Escribe *CONFIRMAR* para finalizar.`);
+                // Si no fue un estado negativo (fue un éxito total), enviamos el mensaje de la IA
+                if (!esEstadoNegativo) {
+                    await enviarTexto(userId, `${aiResponse.waiterMessage}`, auth);
+                }
+                
+                await updateCart(userId, businessId, { 
+                    tempData: { ...cart.tempData, history: updatedHistory, lastProductDiscussed: itemsValidados[0].nombre } 
+                });
+                await enviarTexto(userId, "Escribe *CARRITO* para revisar o sigue pidiendo.", auth);
+                return "AI_SUCCESS";
             }
-            
-            return "AI_SUCCESS";
         }
-        
-        // CASO B: Solo productos (Sin datos de envío completos)
-        await updateCart(userId, { conversationState: 'EN_CARRITO' });
-        await enviarTexto(userId, `${feedbackMessage}\nEscribe *CARRITO* para revisar o *FINALIZAR* para continuar.`);
-        return "AI_SUCCESS";
-
-    } catch (error) {
-        console.error('Error IA:', error);
-        return "NO_ITEMS";
+    } catch (e) {
+        logger.error('Error IA:', e);
+        return "ERROR";
     }
 }
 
-// ----------------------------------------------------------------------
-// WEBHOOK PRINCIPAL (POST)
-// ----------------------------------------------------------------------
-
+// --- WEBHOOK POST ---
 router.post('/webhook', async (req, res) => {
-    let userId = null;
-
     try {
-        const messageObject = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+        const value = req.body.entry?.[0]?.changes?.[0]?.value;
+        const messageObject = value?.messages?.[0];
         if (!messageObject) return res.sendStatus(200);
-
-        userId = messageObject.from;
-        const text = (messageObject.text?.body || '').trim().toLowerCase(); 
-        const normalizedText = text.toUpperCase();
-
-        // 1. OBTENER CARRITO INICIAL
-        let cart = await getOrCreateCart(userId);
-        const config = await getGlobalConfig(); 
-        const open = config?.isBusinessOpen ?? true; 
-
-        if (!open) {
-            await enviarTexto(userId, config?.closedMessage || "Estamos cerrados temporalmente. Disculpa.");
-            return res.sendStatus(200);
-        }
         
-        // --- MANEJAR INTERACCIONES (BOTONES) ---
-        if (messageObject.interactive?.type === 'button_reply' && cart.conversationState === 'PREGUNTANDO_PAGO') {
-            const interactiveData = messageObject.interactive.button_reply;
-            if (interactiveData.id.startsWith('PAYMENT_')) {
-                const method = interactiveData.id.replace('PAYMENT_', '').replace(/_/g, ' ');
-                const cleanMethod = method.charAt(0).toUpperCase() + method.slice(1).toLowerCase(); 
-                
-                cart.tempData.paymentMethod = cleanMethod;
-                // Actualizamos y refrescamos instancia
-                cart = await updateCart(userId, { tempData: cart.tempData, conversationState: 'CONFIRMANDO_PEDIDO' });
-                await sendCartSummary(userId, cart);
-                //await enviarTexto(userId, "Hemos registrado tu forma de pago. Escribe *CONFIRMAR* para enviar el pedido.");
+        const userId = messageObject.from;
+        const restaurante = await Restaurante.findOne({ whatsappPhoneId: value.metadata.phone_number_id });
+        if (!restaurante) return res.sendStatus(200);
+
+        const auth = { token: restaurante.whatsappToken, phoneId: restaurante.whatsappPhoneId };
+        const businessId = restaurante._id;
+        let cart = await getOrCreateCart(userId, businessId);
+
+        // 1. INTERACTIVOS (Botones)
+        if (messageObject.type === 'interactive') {
+            const actionId = messageObject.interactive.button_reply?.id;
+            if (actionId?.startsWith('MODE_')) {
+                cart.tempData.deliveryMode = actionId === 'MODE_DELIVERY' ? 'DELIVERY' : 'PICKUP';
+                await updateCart(userId, businessId, { tempData: cart.tempData });
+                await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante);
+                return res.sendStatus(200);
+            }
+            if (actionId?.startsWith('PAYMENT_')) {
+                const method = actionId.replace('PAYMENT_', '').replace(/_/g, ' ');
+                cart.tempData.paymentMethod = method.charAt(0).toUpperCase() + method.slice(1).toLowerCase();
+                await updateCart(userId, businessId, { tempData: cart.tempData });
+                await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante);
                 return res.sendStatus(200);
             }
         }
 
-        // --- MANEJAR COMANDOS GLOBALES (CON RECARGA DE SEGURIDAD) ---
-        
-        if (['MENÚ', 'MENU', 'HOLA'].includes(normalizedText)) {
-            await sendMenu(userId);
-            return res.sendStatus(200);
-        }
-        
-        if (normalizedText === 'CARRITO') {
-            cart = await getOrCreateCart(userId); // Refrescar antes de mostrar
-            await sendCartSummary(userId, cart);
+        // 2. GPS
+        if (messageObject.type === 'location') {
+            const { latitude, longitude } = messageObject.location;
+            cart.tempData.address = `https://www.google.com/maps?q=${latitude},${longitude}`;
+            await updateCart(userId, businessId, { tempData: cart.tempData });
+            await enviarTexto(userId, "📍 Ubicación guardada.", auth);
+            await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante);
             return res.sendStatus(200);
         }
 
-        if (normalizedText === 'FINALIZAR') {
-            cart = await getOrCreateCart(userId); // Refrescar para ver items de IA
-            if (!cart.items || cart.items.length === 0) {
-                await enviarTexto(userId, "Tu carrito está vacío. Escribe *MENÚ* para empezar.");
-            } else {
-                await updateCart(userId, { conversationState: 'PREGUNTANDO_NOMBRE' });
-                await enviarTexto(userId, "¡Perfecto! Vamos a finalizar. ¿Cuál es tu nombre completo?");
-            }
-            return res.sendStatus(200);
-        }
-
-        if (normalizedText.startsWith('QUITAR') && cart.items?.length > 0) {
-            const index = parseInt(normalizedText.split(' ')[1]);
-            if (!isNaN(index)) {
-                await removeItemFromCart(userId, cart, index); // Asegúrate de que removeItem reciba 'cart'
-                const updatedCart = await getOrCreateCart(userId);
-                await sendCartSummary(userId, updatedCart);
-            } else {
-                await enviarTexto(userId, "Escribe QUITAR seguido del número del producto.");
-            }
-            return res.sendStatus(200);
-        }
+        // 3. TEXTO
+        const text = (messageObject.text?.body || '').trim();
+        const normalizedText = text.toUpperCase();
 
         if (normalizedText === 'CONFIRMAR' && cart.conversationState === 'CONFIRMANDO_PEDIDO') {
-            const freshCart = await getOrCreateCart(userId); 
-            
-            // 🛡️ Validación ultra-segura
-            const hasItems = freshCart && freshCart.items && Array.isArray(freshCart.items) && freshCart.items.length > 0;
-
-            if (hasItems) {
-                try {
-                    await processFinalOrder(userId, freshCart); 
-                    await updateCart(userId, { conversationState: 'INICIO', items: [] });
-                    await enviarTexto(userId, "✅ ¡Pedido recibido con éxito! En un momento te contactaremos.");
-                } catch (procError) {
-                    logger.error('Error dentro de processFinalOrder:', procError);
-                    throw procError; // Esto nos dirá si el .length falló DENTRO de la función del pedido
-                }
-            } else {
-                await enviarTexto(userId, "Tu carrito parece estar vacío. 😅 Escribe *MENÚ* para agregar productos.");
-            }
-            return res.sendStatus(200);
-        }
-        
-        if (normalizedText === 'AYUDA' || normalizedText === 'AGENTE') {
-            await updateCart(userId, { conversationState: 'ESPERANDO_AGENTE' });
-            await enviarTexto(userId, "Un agente humano ha sido notificado. Por favor, espera su mensaje.");
+            const financieros = calcularTotalesFinales(cart.items, cart.tempData.deliveryMode, restaurante);
+            await processFinalOrder(userId, cart, businessId, auth, financieros);
             return res.sendStatus(200);
         }
 
-        // --- LÓGICA DE DECISIÓN HÍBRIDA (IA / ESTADOS) ---
-        
-        const isNumeric = !isNaN(text.trim()) && text.trim().length < 3;
+        if (await manejarPorteroNivel1(text, userId, businessId, auth, cart, restaurante)) return res.sendStatus(200);
 
-        if (isNumeric) {
-            await handleStateFlow(userId, text, cart);
-            return res.sendStatus(200); 
-        } 
-        
-        const aiResult = await handleAICheck(userId, text, cart);
-        
-        if (aiResult === "AI_SUCCESS") {
-            // Si la IA tuvo éxito, ya respondió al usuario.
-            return res.sendStatus(200); 
-        } else {
-            // Si la IA no entendió, probamos si el usuario está en un paso intermedio
-            const stateResult = await handleStateFlow(userId, text, cart);
-            
-            if (stateResult === "TRY_AI") {
-                await enviarTexto(userId, "No logré entender eso. 😅 Escribe *MENÚ* para ver las opciones.");
-            }
+        // 4. CAPTURA POR ESTADO (FSM)
+        if (cart.conversationState === 'PREGUNTANDO_NOMBRE') {
+            cart.tempData.name = text.toLowerCase().replace(/\b\w/g, l => l.toUpperCase());
+            await updateCart(userId, businessId, { tempData: cart.tempData });
+            await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante);
             return res.sendStatus(200);
         }
+
+        if (cart.conversationState === 'PREGUNTANDO_DIRECCION') {
+            cart.tempData.address = text;
+            await updateCart(userId, businessId, { tempData: cart.tempData });
+            await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante);
+            return res.sendStatus(200);
+        }
+
+        if (cart.conversationState === 'CONFIRMANDO_PEDIDO') {
+            await enviarTexto(userId, "Tu pedido está listo para confirmar. Escribe *CONFIRMAR* o *QUITAR* para hacer cambios.", auth);
+            return res.sendStatus(200);
+        }
+
+        // INTERCEPTOR DE CIERRE
+        const frasesCierre = ['NO', 'NADA MAS', 'ES TODO', 'NO GRACIAS', 'NADA MÁS', 'POR AHORA NO'];
+        if (frasesCierre.includes(normalizedText) && cart.items.length > 0) {
+            await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante);
+            return res.sendStatus(200);
+        }
+
+        // 5. LLAMADA FINAL A IA
+        await handleAICheck(userId, text, cart, businessId, auth, restaurante.configuracion);
+        res.sendStatus(200);
 
     } catch (error) {
-        logger.error('Error catastrófico en receiveMessage:', error);
-        if (userId) {
-            await enviarTexto(userId, "⚠️ Ocurrió un error inesperado. Intenta de nuevo o escribe *MENÚ*.");
-        }
-        if (!res.headersSent) res.sendStatus(500);
+        logger.error('Error catastrófico:', error);
+        res.sendStatus(500);
     }
 });
 
@@ -360,14 +432,11 @@ router.get('/webhook', (req, res) => {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
-
-    if (mode && token) {
-        if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-            logger.info('WEBHOOK_VERIFIED');
-            return res.status(200).send(challenge);
-        }
+    const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "roman123"; 
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+        return res.status(200).send(challenge);
     }
-    return res.sendStatus(403);
+    res.sendStatus(403);
 });
 
 export default router;

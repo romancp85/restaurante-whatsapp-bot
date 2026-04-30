@@ -31,6 +31,12 @@ const diaOperacionSchema = new mongoose.Schema({
 
 // Esquema principal: contendrá solo un documento
 const configuracionSchema = new mongoose.Schema({
+    businessId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'Restaurante', 
+    required: true,
+    index: true 
+    },
     nombre: {
         type: String,
         required: true,

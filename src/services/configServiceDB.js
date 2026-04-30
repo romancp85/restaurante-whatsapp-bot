@@ -10,23 +10,18 @@ const CONFIG_KEY = 'GLOBAL_RESTAURANT';
  * Si no existe, crea uno con valores por defecto.
  * @returns {Promise<Object>} El documento de configuración.
  */
-export async function getGlobalConfig() {
+export async function getGlobalConfig(businessId) {
     try {
-        // Busca o crea el documento único de configuración
+        // Buscamos la configuración que pertenezca a este restaurante específico
         const config = await GlobalConfig.findOneAndUpdate(
-            { clientId: CONFIG_KEY },
-            { $setOnInsert: { clientId: CONFIG_KEY } }, // Solo establece el valor si es nuevo
-            { new: true, upsert: true } // 'new: true' devuelve el documento actualizado/creado; 'upsert: true' lo crea si no existe
+            { businessId: businessId },
+            { $setOnInsert: { businessId: businessId } }, 
+            { new: true, upsert: true }
         );
         return config;
-
     } catch (error) {
-        logger.error('Error al obtener/crear la configuración global:', error.message);
-        // Devolver un valor de emergencia para que el bot no se rompa
-        return { 
-            acceptedPaymentMethods: ['Efectivo', 'Tarjeta'],
-            closedMessage: "Error de sistema: Estamos cerrados temporalmente. Disculpa."
-        };
+        logger.error(`Error al obtener config para ${businessId}:`, error.message);
+        return { acceptedPaymentMethods: ['Efectivo'], costoEnvioCents: 0 };
     }
 }
 

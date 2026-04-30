@@ -3,10 +3,17 @@
 import mongoose from 'mongoose';
 
 const globalConfigSchema = new mongoose.Schema({
+    businessId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'Restaurante', 
+    required: true,
+    unique: true, // 🛑 AHORA ESTO ES LO ÚNICO ÚNICO: Una config por restaurante
+    index: true 
+    },
     clientId: {
         type: String,
         required: true,
-        unique: true,
+        //unique: true,
         default: 'GLOBAL_RESTAURANT' // ID único para el documento de configuración
     },
     // Estado de horarios de atención (ya debe existir)

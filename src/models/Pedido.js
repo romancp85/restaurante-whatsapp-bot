@@ -1,14 +1,23 @@
-// src/models/Pedido.js - CÓDIGO FINAL CORREGIDO
+// src/models/Pedido.js
 import mongoose from 'mongoose';
 import autoIncrement from 'mongoose-sequence';
 
-// 1. Esquema para los ítems dentro del carrito
-const itemPedidoSchema = new mongoose.Schema({
+const { Schema } = mongoose;
+
+// 1. Esquema para los modificadores (Extras)
+const opcionSeleccionadaSchema = new Schema({
+    grupoNombre: String,
+    opcionNombre: String,
+    precioExtra: { type: Number, default: 0 } // En centavos
+}, { _id: false });
+
+// 2. Esquema para los ítems dentro del pedido
+const itemPedidoSchema = new Schema({
     itemId: { 
-        type: mongoose.Schema.Types.ObjectId, 
+        type: Schema.Types.ObjectId, 
+        ref: 'MenuItem',
         required: true 
     },
-    // ❌ CAMPO 'numero_pedido' ELIMINADO DE AQUÍ ❌
     nombre: { 
         type: String, 
         required: true 
@@ -17,12 +26,13 @@ const itemPedidoSchema = new mongoose.Schema({
         type: Number, 
         required: true, 
         min: 0 
-    }, // Precio en centavos al momento de la compra
+    },
     cantidad: { 
         type: Number, 
         required: true, 
         min: 1 
     },
+    opcionesSeleccionadas: [opcionSeleccionadaSchema],
     notas: { 
         type: String, 
         default: '' 
@@ -32,8 +42,8 @@ const itemPedidoSchema = new mongoose.Schema({
 // Inicializamos el plugin de secuencia
 const AutoIncrement = autoIncrement(mongoose);
 
-// 2. Esquema Principal del Pedido
-const pedidoSchema = new mongoose.Schema({
+// 3. Esquema Principal del Pedido
+const pedidoSchema = new Schema({
     // === Datos del Cliente ===
     telefonoCliente: {
         type: String,
@@ -50,11 +60,22 @@ const pedidoSchema = new mongoose.Schema({
         type: String,
         required: true
     },
+    clienteId: {
+        type: String,
+        required: true
+    },
+    
+    // === 🌟 NOTAS GLOBALES (EL CAMBIO CLAVE) ===
+    // Aquí es donde se guardará "billete de 500", "el timbre no sirve", etc.
+    comentarios: { 
+        type: String, 
+        default: "" 
+    },
     
     // === Contenido del Pedido ===
     items: [itemPedidoSchema],
     
-    // === Financiero ===
+    // === Financiero (En centavos) ===
     subtotal: {
         type: Number,
         required: true,
@@ -63,7 +84,7 @@ const pedidoSchema = new mongoose.Schema({
     costoEnvio: {
         type: Number,
         required: true,
-        default: 3000
+        default: 0
     },
     total: {
         type: Number,
@@ -74,26 +95,30 @@ const pedidoSchema = new mongoose.Schema({
     // === Operación y Estado ===
     metodoPago: {
         type: String,
-        enum: ['Efectivo', 'Transferencia', 'Tarjeta'],
         default: 'Efectivo'
+    },
+    entregaMode: {
+        type: String,
+        enum: ['DELIVERY', 'PICKUP'],
+        default: 'DELIVERY'
     },
     estado: {
         type: String,
         enum: ['Pendiente', 'Confirmado', 'En Preparación', 'En Camino', 'Entregado', 'Cancelado'],
         default: 'Pendiente'
     },
-    
-    // === Metadatos ===
-    clienteId: {
-        type: String,
-        default: 'default'
+    businessId: { 
+        type: Schema.Types.ObjectId, 
+        ref: 'Restaurante', 
+        required: true, 
+        index: true 
     }
 }, { timestamps: true });
 
-// 🛑 APLICAR EL PLUGIN AL ESQUEMA PRINCIPAL (AQUÍ ESTÁ CORRECTO)
+// APLICAR EL PLUGIN DE AUTO-INCREMENTO
 pedidoSchema.plugin(AutoIncrement, {
-    inc_field: 'numero_pedido', // Nombre del campo que será auto-incremental
-    start_seq: 1000            // Número inicial (empezará en 1000, ajustado desde 100)
+    inc_field: 'numero_pedido', 
+    start_seq: 1000            
 });
 
 export default mongoose.model('Pedido', pedidoSchema);
