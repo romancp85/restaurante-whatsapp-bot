@@ -2,6 +2,7 @@
 import Pedido from '../models/Pedido.js';
 import ShoppingCart from '../models/ShoppingCart.js';
 import Restaurante from '../models/Restaurante.js'; 
+import MenuItem from '../models/MenuItem.js'; // 👈 FALTA ESTA IMPORTACIÓN
 import { sendMessage, formatPrice } from './utils.js';
 import logger from '../utils/logger.js';
 
@@ -54,8 +55,25 @@ export const processFinalOrder = async (userId, cart, businessId, auth, financie
         
         await nuevoPedido.save();
 
-        // 🌟 REGLA DE ORO: BORRADO TOTAL DE LA SESIÓN (Antes del Return)
-        // Usamos whatsappId para que coincida con el modelo ShoppingCart
+        // 🌟 ACTUALIZACIÓN DE STOCK (VENDIDAS HOY)
+        try {
+            const bulkOps = nuevoPedido.items.map(item => ({
+                updateOne: {
+                    filter: { _id: item.itemId },
+                    update: { $inc: { vendidas_hoy: item.cantidad } }
+                }
+            }));
+            
+            if (bulkOps.length > 0) {
+                await MenuItem.bulkWrite(bulkOps);
+                logger.info(`[Stock] Inventario actualizado para pedido #${nuevoPedido.numero_pedido}`);
+            }
+        } catch (stockError) {
+            logger.error(`Error al actualizar stock del pedido ${nuevoPedido.numero_pedido}:`, stockError);
+            // No bloqueamos el pedido si falla el stock, solo lo logueamos
+        }
+
+        // 🌟 BORRADO TOTAL DE LA SESIÓN
         await ShoppingCart.deleteOne({ whatsappId: userId, businessId: businessId }); 
         logger.info(`[SaaS] Sesión limpiada con éxito para ${userId}`);
 
@@ -89,19 +107,8 @@ export const processFinalOrder = async (userId, cart, businessId, auth, financie
             ? "\n\nTe avisaremos cuando esté listo para retirar. 🛍️"
             : "\n\nTe avisaremos cuando el repartidor vaya en camino. 🛵";
         
-        // Enviamos el mensaje final
         await sendMessage(userId, confirmText, auth);
 
-        // Decrementar stock atómicamente en MongoDB
-        const bulkOps = nuevoPedido.items.map(item => ({
-            updateOne: {
-                filter: { _id: item.itemId },
-                update: { $inc: { vendidas_hoy: item.cantidad } }
-            }
-        }));
-        await MenuItem.bulkWrite(bulkOps);
-
-        // Finalmente retornamos el pedido para cualquier lógica adicional en el webhook
         return nuevoPedido;
 
     } catch (error) {

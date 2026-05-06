@@ -9,8 +9,6 @@ import { processFinalOrder } from './orderProcessor.js';
 import { verificarDisponibilidad } from '../utils/dateUtils.js';
 import { decrypt } from '../utils/cryptoUtils.js'; 
 import logger from '../utils/logger.js';
-
-// 🌟 NUEVAS IMPORTACIONES
 import { getUltimoPedido, generarPropuestaVIP } from '../services/loyaltyService.js';
 import { calcularDistanciaKM } from '../utils/geoUtils.js';
 
@@ -28,7 +26,7 @@ const enviarBotonesContinuar = async (userId, bodyText, auth) => {
         { id: "MENU", title: "📋 Ver Menú" }
     ];
 
-    await sendMessage(userId, {
+    await sendMessage(userId, { 
         type: "interactive",
         interactive: {
             type: "button",
@@ -140,7 +138,7 @@ const ejecutarCheckoutInteligente = async (userId, businessId, cart, auth, resta
         return;
     }
 
-    await updateCart(userId, businessId, { conversationState: 'CONFIRMANDO_PEDIDO', tempData });
+    await updateCart(userId, businessId, { conversationState: 'CONFIRMANDO_PEDIDO' });
     await sendCartSummary(userId, cart, businessId, auth);
 };
 
@@ -149,28 +147,7 @@ const manejarPorteroNivel1 = async (text, userId, businessId, auth, cart, restau
     const normalizedText = text.toUpperCase().trim();
 
     if (['HOLA', 'MENU', 'MENÚ'].includes(normalizedText)) {
-        // Lógica VIP
-        const ultimo = await getUltimoPedido(userId, businessId);
-        const propuesta = generarPropuestaVIP(ultimo);
-
-        if (propuesta) {
-            await updateCart(userId, businessId, { conversationState: 'PROPUESTA_VIP' });
-            await sendMessage(userId, {
-                type: "interactive",
-                interactive: {
-                    type: "button",
-                    body: { text: propuesta.texto },
-                    action: {
-                        buttons: [
-                            { id: "REPETIR_PEDIDO", title: "✅ Sí, lo mismo" },
-                            { id: "MENU_NUEVO", title: "📋 Ver Menú" }
-                        ]
-                    }
-                }
-            }, auth);
-            return true;
-        }
-
+        // Limpiar carritos abandonados de más de 24 horas
         const unDiaEnMs = 24 * 60 * 60 * 1000;
         if ((new Date() - cart.updatedAt) > unDiaEnMs) {
             await updateCart(userId, businessId, { 
@@ -178,8 +155,34 @@ const manejarPorteroNivel1 = async (text, userId, businessId, auth, cart, restau
                 tempData: { history: [], name: null, address: null, paymentMethod: null, deliveryMode: null },
                 conversationState: 'INICIO' 
             });
+            cart = await getOrCreateCart(userId, businessId);
         }
 
+        // Lógica VIP: Solo si el carrito está vacío
+        if (cart.items.length === 0) {
+            const ultimo = await getUltimoPedido(userId, businessId);
+            const propuesta = generarPropuestaVIP(ultimo);
+
+            if (propuesta && cart.conversationState !== 'PROPUESTA_VIP') {
+                await updateCart(userId, businessId, { conversationState: 'PROPUESTA_VIP' });
+                await sendMessage(userId, {
+                    type: "interactive",
+                    interactive: {
+                        type: "button",
+                        body: { text: propuesta.texto },
+                        action: {
+                            buttons: [
+                                { type: "reply", reply: { id: "REPETIR_PEDIDO", title: "✅ Sí, lo mismo" } },
+                                { type: "reply", reply: { id: "MENU_NUEVO", title: "📋 Ver Menú" } }
+                            ]
+                        }
+                    }
+                }, auth);
+                return true;
+            }
+        }
+
+        // Si no hay VIP o ya hay items, mandamos menú normal
         await sendMenu(userId, businessId, auth);
         return true;
     }
@@ -206,6 +209,13 @@ async function handleAICheck(userId, text, cart, businessId, auth, restauranteCo
     try {
         const history = cart.tempData.history || [];
         const aiResponse = await analizarPedidoConIA(text, businessId, history, restauranteConfig, cart.tempData.lastProductDiscussed, cart.tempData.menuMap); 
+
+        // 🌟 CRÍTICO: Si la IA detecta que el usuario quiere agregar algo, 
+        // rompemos cualquier estado anterior (VIP, Preguntas de datos, etc)
+        if (aiResponse.items?.length > 0) {
+            await updateCart(userId, businessId, { conversationState: 'MOSTRANDO_MENU' });
+            cart.conversationState = 'MOSTRANDO_MENU'; 
+        }
 
         if (aiResponse.extractedData) {
             const { nombre, direccion, metodoPago, modoEntrega, notasPago, notasCocina } = aiResponse.extractedData;
@@ -237,11 +247,11 @@ async function handleAICheck(userId, text, cart, businessId, auth, restauranteCo
             tempData: { ...cart.tempData, history: updatedHistory, lastProductDiscussed: itemsValidados?.[0]?.nombre || cart.tempData.lastProductDiscussed } 
         });
 
-        const isReady = cart.tempData.name && cart.tempData.paymentMethod && (cart.tempData.deliveryMode !== 'DELIVERY' || cart.tempData.address);
         await enviarBotonesContinuar(userId, aiResponse.waiterMessage, auth);
 
     } catch (e) {
         logger.error('Error handleAICheck:', e);
+        await enviarTexto(userId, "Lo siento, tuve un problema procesando eso. ¿Podrías repetirlo?", auth);
     }
 }
 
@@ -266,108 +276,116 @@ router.post('/webhook', async (req, res) => {
         const businessId = restaurante._id;
         const tokenReal = decrypt(restaurante.whatsappToken);
         const auth = { token: tokenReal, phoneId: restaurante.whatsappPhoneId };
-        
-        // 1. OBTENER CARRITO (Ahora disponible para todo el flujo)
         let cart = await getOrCreateCart(userId, businessId);
 
-        // 2. HANDOFF / AGENTE HUMANO
+        // Handoff Check
         if (cart.conversationState === 'ESPERANDO_AGENTE') return res.sendStatus(200);
 
-        // 3. DISPONIBILIDAD
+        // Disponibilidad
         const disponibilidad = verificarDisponibilidad(restaurante);
         if (!disponibilidad.abierto) {
             await enviarTexto(userId, disponibilidad.mensaje, auth);
             return res.sendStatus(200);
         }
 
-        // 4. MANEJO DE INTERACTIVOS
+        // Manejo de Interactivos
         if (messageObject.type === 'interactive') {
             const interactive = messageObject.interactive;
-            
-            if (interactive.type === 'button_reply') {
-                const actionId = interactive.button_reply.id;
-                
-                if (actionId === 'REPETIR_PEDIDO') {
-                    const ultimo = await getUltimoPedido(userId, businessId);
-                    if (ultimo) {
-                        await updateCart(userId, businessId, { 
-                            items: ultimo.items, 
-                            tempData: { ...cart.tempData, name: ultimo.nombreCliente, address: ultimo.direccionEntrega, deliveryMode: ultimo.entregaMode, paymentMethod: ultimo.metodoPago }
-                        });
-                        cart = await getOrCreateCart(userId, businessId);
-                        await enviarTexto(userId, "✅ He cargado tu pedido anterior.", auth);
-                        return await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante), res.sendStatus(200);
-                    }
-                }
-                
-                if (actionId === 'BTN_CHECKOUT') return await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante), res.sendStatus(200);
-                if (actionId === 'BTN_LANZAR_LISTA_QUITAR') return await enviarListaParaQuitar(userId, cart, auth), res.sendStatus(200);
-                if (actionId === 'BTN_VER_QUITAR') return await sendCartSummary(userId, cart, businessId, auth), res.sendStatus(200);
-                if (actionId === 'MENU' || actionId === 'MENU_NUEVO') return await sendMenu(userId, businessId, auth), res.sendStatus(200);
-                
-                if (actionId === 'BTN_CONFIRMAR_FINAL') {
-                    const isReady = !!(cart.tempData.name && cart.tempData.paymentMethod && (cart.tempData.deliveryMode === 'PICKUP' || cart.tempData.address));
-                    if (isReady) {
-                        const financieros = calcularTotalesFinales(cart.items, cart.tempData.deliveryMode, restaurante);
-                        return await processFinalOrder(userId, cart, businessId, auth, financieros);
-                    }
-                    return await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante), res.sendStatus(200);
-                }
+            const actionId = interactive.button_reply?.id || interactive.list_reply?.id;
 
-                if (actionId.startsWith('MODE_')) cart.tempData.deliveryMode = actionId === 'MODE_DELIVERY' ? 'DELIVERY' : 'PICKUP';
-                else if (actionId.startsWith('PAYMENT_')) {
-                    const method = actionId.replace('PAYMENT_', '').replace(/_/g, ' ');
-                    cart.tempData.paymentMethod = method.charAt(0).toUpperCase() + method.slice(1).toLowerCase();
-                }
-            }
-
-            if (interactive.type === 'list_reply') {
-                const listId = interactive.list_reply.id;
-                if (listId.startsWith('REMOVE_IDX_')) {
-                    const index = parseInt(listId.split('_')[2]);
-                    await handleRemoveItem(userId, businessId, index, cart, auth);
+            if (actionId === 'REPETIR_PEDIDO') {
+                const ultimo = await getUltimoPedido(userId, businessId);
+                if (ultimo) {
+                    await updateCart(userId, businessId, { 
+                        items: ultimo.items, 
+                        tempData: { ...cart.tempData, name: ultimo.nombreCliente, address: ultimo.direccionEntrega, deliveryMode: ultimo.entregaMode, paymentMethod: ultimo.metodoPago }
+                    });
+                    cart = await getOrCreateCart(userId, businessId);
+                    const resumenVip = `¡Genial! Cargué tu pedido anterior 🍔\n📍 *Entrega:* ${ultimo.entregaMode}\n🏠 *Dirección:* ${ultimo.direccionEntrega}\n💳 *Pago:* ${ultimo.metodoPago}\n\n¿Todo igual o cambiamos algo?`;
+                    await sendMessage(userId, {
+                        type: "interactive",
+                        interactive: {
+                            type: "button",
+                            body: { text: resumenVip },
+                            action: {
+                                buttons: [
+                                    { type: "reply", reply: { id: "VIP_CONFIRMAR_TODO", title: "✅ Todo igual" } },
+                                    { type: "reply", reply: { id: "VIP_CAMBIAR_DATOS", title: "✏️ Cambiar datos" } },
+                                    { type: "reply", reply: { id: "MENU_NUEVO", title: "📋 Ver Menú" } }
+                                ]
+                            }
+                        }
+                    }, auth);
                     return res.sendStatus(200);
                 }
             }
 
+            if (actionId === 'VIP_CONFIRMAR_TODO') return await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante), res.sendStatus(200);
+            
+            if (actionId === 'VIP_CAMBIAR_DATOS' || actionId === 'MENU_NUEVO') {
+                await updateCart(userId, businessId, { 
+                    conversationState: actionId === 'MENU_NUEVO' ? 'MOSTRANDO_MENU' : cart.conversationState,
+                    tempData: { ...cart.tempData, deliveryMode: null, address: null, paymentMethod: null } 
+                });
+                cart = await getOrCreateCart(userId, businessId);
+                if (actionId === 'MENU_NUEVO') return await sendMenu(userId, businessId, auth), res.sendStatus(200);
+                return await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante), res.sendStatus(200);
+            }
+
+            if (actionId === 'BTN_CHECKOUT') return await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante), res.sendStatus(200);
+            if (actionId === 'BTN_LANZAR_LISTA_QUITAR') return await enviarListaParaQuitar(userId, cart, auth), res.sendStatus(200);
+            if (actionId === 'BTN_VER_QUITAR' || actionId === 'CARRITO') return await sendCartSummary(userId, cart, businessId, auth), res.sendStatus(200);
+            if (actionId === 'MENU') return await sendMenu(userId, businessId, auth), res.sendStatus(200);
+            
+            if (actionId === 'BTN_CONFIRMAR_FINAL') {
+                const financieros = calcularTotalesFinales(cart.items, cart.tempData.deliveryMode, restaurante);
+                return await processFinalOrder(userId, cart, businessId, auth, financieros), res.sendStatus(200);
+            }
+
+            if (actionId?.startsWith('REMOVE_IDX_')) {
+                const index = parseInt(actionId.split('_')[2]);
+                await handleRemoveItem(userId, businessId, index, cart, auth);
+                return res.sendStatus(200);
+            }
+
+            if (actionId?.startsWith('MODE_')) cart.tempData.deliveryMode = actionId === 'MODE_DELIVERY' ? 'DELIVERY' : 'PICKUP';
+            if (actionId?.startsWith('PAYMENT_')) cart.tempData.paymentMethod = actionId.replace('PAYMENT_', '').replace(/_/g, ' ');
+
             await updateCart(userId, businessId, { tempData: cart.tempData });
             await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante);
             return res.sendStatus(200);
         }
 
-        // 5. GPS / UBICACIÓN + GEOFENCING
+        // GPS
         if (messageObject.type === 'location') {
             const { latitude, longitude } = messageObject.location;
             const [restLat, restLon] = restaurante.configuracion.ubicacionLocal?.split(',').map(Number) || [0,0];
             const distancia = calcularDistanciaKM(latitude, longitude, restLat, restLon);
-
-            if (distancia > 5) { // Límite 5km
-                await enviarTexto(userId, `📍 Estás a ${distancia.toFixed(1)}km. Por ahora solo entregamos a 5km a la redonda. ¿Podrías pasar a recogerlo?`, auth);
+            if (distancia > 5) {
+                await enviarTexto(userId, `📍 Estás a ${distancia.toFixed(1)}km. Solo entregamos a 5km. ¿Vienes por él?`, auth);
                 cart.tempData.deliveryMode = 'PICKUP';
             } else {
                 cart.tempData.address = `https://www.google.com/maps?q=${latitude},${longitude}`;
                 cart.tempData.deliveryMode = 'DELIVERY';
-                await enviarTexto(userId, "📍 Ubicación guardada.", auth);
             }
             await updateCart(userId, businessId, { tempData: cart.tempData });
             await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante);
             return res.sendStatus(200);
         }
 
-        // 6. TEXTO Y COMANDOS
         const text = (messageObject.text?.body || '').trim();
         
-        // Handoff Check (Sentimiento negativo)
-        const frustracion = ['AGENTE', 'HUMANO', 'AYUDA', 'MALISIMO', 'NO ENTIENDO'].some(k => text.toUpperCase().includes(k));
+        // Handoff Manual
+        const frustracion = ['AGENTE', 'HUMANO', 'AYUDA'].some(k => text.toUpperCase().includes(k));
         if (frustracion) {
             await updateCart(userId, businessId, { conversationState: 'ESPERANDO_AGENTE' });
-            await enviarTexto(userId, "Comprendo. He pausado mi asistencia. Un agente humano te atenderá pronto. 👨‍💻", auth);
+            await enviarTexto(userId, "Entendido. Un humano te atenderá pronto. 👨‍💻", auth);
             return res.sendStatus(200);
         }
 
         if (await manejarPorteroNivel1(text, userId, businessId, auth, cart, restaurante)) return res.sendStatus(200);
 
-        // FSM: Captura de Datos
+        // FSM Captura
         if (['PREGUNTANDO_NOMBRE', 'PREGUNTANDO_DIRECCION'].includes(cart.conversationState)) {
             if (cart.conversationState === 'PREGUNTANDO_NOMBRE') cart.tempData.name = text;
             else if (cart.conversationState === 'PREGUNTANDO_DIRECCION') cart.tempData.address = text;
@@ -376,7 +394,7 @@ router.post('/webhook', async (req, res) => {
             return res.sendStatus(200);
         }
 
-        // IA FINAL
+        // IA
         await handleAICheck(userId, text, cart, businessId, auth, restaurante.configuracion);
         res.sendStatus(200);
 

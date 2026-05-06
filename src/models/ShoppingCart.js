@@ -43,7 +43,8 @@ const shoppingCartSchema = new mongoose.Schema({
             'CONFIRMANDO_PEDIDO',
             'ESPERANDO_AGENTE',
             'PREGUNTANDO_MODO_ENTREGA',
-            'WAITING_FOR_REMOVAL'
+            'WAITING_FOR_REMOVAL',
+            'PROPUESTA_VIP'
         ],
         default: 'INICIO'
     },
