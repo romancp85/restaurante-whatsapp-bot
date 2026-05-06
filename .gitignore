@@ -8,3 +8,14 @@ yarn-debug.log*
 # Archivos de Entorno de Desarrollo y Secretos
 .env
 .DS_Store
+
+# Archivos de texto grandes o reportes
+contexto_completo.txt
+*.log
+
+# Variables de entorno (CRÍTICO para seguridad Enterprise)
+.env
+.env.local
+
+# Archivos de sistema
+Thumbs.db
