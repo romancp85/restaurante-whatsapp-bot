@@ -8,7 +8,8 @@ import mongoose from 'mongoose';
 dotenv.config();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-export const analizarPedidoConIA = async (text, businessId, history = [], restauranteConfig = {}, lastProductDiscussed = null) => {
+// 🌟 CAMBIO EN LA FIRMA: Añadimos menuMap al final
+export const analizarPedidoConIA = async (text, businessId, history = [], restauranteConfig = {}, lastProductDiscussed = null, menuMap = []) => {
     try {
         const { 
             nombreBot = "Mateo", 
@@ -17,7 +18,6 @@ export const analizarPedidoConIA = async (text, businessId, history = [], restau
             directivasIA = [] 
         } = restauranteConfig;
 
-        // 🌟 CORRECCIÓN: Definimos bId para evitar el error "bId is not defined"
         const bId = new mongoose.Types.ObjectId(businessId);
 
         // 1. FILTRADO INTELIGENTE DEL CATÁLOGO (Mejorado)
@@ -65,12 +65,18 @@ export const analizarPedidoConIA = async (text, businessId, history = [], restau
 
         logger.info(`[SaaS] Productos cargados para IA: ${menuItems.length} (${menuItems.map(i => i.nombre).join(', ')})`);
         
-        // 2. CONSTRUCCIÓN DEL CATÁLOGO PARA LA IA
-        const menuSimplified = menuItems.map(item => {
+        // 2. CONSTRUCCIÓN DEL CATÁLOGO PARA LA IA (Con índices para mayor precisión)
+// 🌟 2. CONSTRUCCIÓN DEL CATÁLOGO (CORREGIDO: Usando el parámetro menuMap)
+        const menuSimplified = menuItems.map((item) => {
+            // Buscamos el número que tiene este item en el mapa actual del cliente
+            const mapping = (menuMap || []).find(m => m.itemId.toString() === item._id.toString());
+            const prefix = mapping ? `[${mapping.index}] ` : "";
+
             const mods = item.modificadores?.map(m => 
-                `${m.nombre} (Máx: ${m.maximo}): ${m.opciones.map(o => o.nombre).join(', ')}`
+                `${m.nombre}: ${m.opciones.map(o => o.nombre).join(', ')}`
             ).join(' | ');
-            return `- PRODUCTO: "${item.nombre}" | PRECIO: $${item.precioBase} ${mods ? `| MODS: ${mods}` : ''}`;
+            
+            return `- PRODUCTO: ${prefix}"${item.nombre}" | PRECIO: $${item.precioBase} ${mods ? `| OPCIONES: ${mods}` : ''}`;
         }).join('\n');
 
         // 3. ENSAMBLAJE DE DIRECTIVAS DEL NEGOCIO

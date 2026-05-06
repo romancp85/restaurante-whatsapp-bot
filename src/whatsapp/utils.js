@@ -1,120 +1,85 @@
-// src/whatsapp/utils.js - VERSIÓN FINAL ESTABLE Y UNIVERSAL
+// src/whatsapp/utils.js - VERSIÓN SQUARE BLINDADA (AUTO-DETECCIÓN DE PARÁMETROS)
 
 import axios from 'axios';
 import MenuItem from '../models/MenuItem.js';
 import logger from '../utils/logger.js';
 import dotenv from 'dotenv';
 import { updateCart } from './cartUtils.js'; 
-import { getAcceptedPaymentMethods } from '../services/paymentService.js'; 
-import { getGlobalConfig } from '../services/configServiceDB.js'; 
 import { calcularTotalesFinales } from '../services/orderValidator.js';
-import Restaurante from '../models/Restaurante.js'; // Necesitamos el modelo para leer la config
+import Restaurante from '../models/Restaurante.js';
 
 dotenv.config();
 
-const WABA_TOKEN = process.env.WHATSAPP_TOKEN;
-const WABA_ID = process.env.WHATSAPP_PHONE_ID;
-
-const API_URL = `https://graph.facebook.com/v19.0/${WABA_ID}/messages`;
-const FALLBACK_DELIVERY_COST = 3000; // Costo de envío de emergencia en centavos
-
 /**
- * Utilidad simple para formatear precios.
- * @param {number} priceInCents - Precio en centavos.
- * @returns {string} Precio formateado (ej: "$55.00").
+ * 1. FORMATEO FINANCIERO (Regla de Oro: Centavos)
  */
 export const formatPrice = (value) => {
     const num = parseFloat(value);
     if (isNaN(num)) return "$0.00";
-    // DIVIDIR ENTRE 100: 15000 centavos / 100 = $150.00
     return `$${(num / 100).toFixed(2)}`;
 };
 
 /**
- * Función auxiliar para obtener el costo de envío del documento global.
+ * 2. FUNCIÓN MAESTRA DE ENVÍO (INTELIGENTE Y AGNOSTICA AL ORDEN)
+ * Esta función detecta automáticamente cuál parámetro es el teléfono y cuál es el token.
  */
-const getDeliveryCost = async () => {
-    try {
-        const config = await getGlobalConfig();
-        const cost = config.costoEnvioCents; 
-        
-        if (typeof cost === 'number' && cost >= 0) {
-            return cost;
-        }
-        return FALLBACK_DELIVERY_COST;
-    } catch (error) {
-        logger.error("Error al obtener costo de envío para resumen. Usando fallback.", error);
-        return FALLBACK_DELIVERY_COST;
+export const sendMessage = async (arg1, arg2, arg3) => {
+    let to, payload, auth;
+
+    // LÓGICA DE AUTO-DETECCIÓN:
+    // Si el primer argumento es un string (teléfono), el orden es (to, payload, auth)
+    if (typeof arg1 === 'string') {
+        to = arg1;
+        payload = arg2;
+        auth = arg3;
+    } 
+    // Si el primer argumento es un objeto (auth), el orden es (auth, to, payload)
+    else {
+        auth = arg1;
+        to = arg2;
+        payload = arg3;
     }
-};
 
-/**
- * Función genérica para enviar cualquier tipo de mensaje a WhatsApp.
- * Acepta: 1. Una cadena de texto (ej: "Hola")
- * 2. Un objeto de contenido estructurado (ej: { type: 'text', text: { body: '...' } })
- * @param {string} to - Número de teléfono del destinatario.
- * @param {string|object} content - Contenido del mensaje.
- */
-/**
- * Envía un mensaje dinámico usando las credenciales del Restaurante.
- * @param {string} to - Teléfono del cliente.
- * @param {object|string} content - Cuerpo del mensaje.
- * @param {object} auth - Objeto con { token, phoneId } del restaurante.
- */
-export const sendMessage = async (to, content, auth) => {
-    // Priorizamos el token del restaurante (SaaS), si no hay, usamos el del .env
-    const token = auth?.token || process.env.WHATSAPP_TOKEN;
-    const phoneId = auth?.phoneId || process.env.WHATSAPP_PHONE_ID;
+    // Extracción segura de credenciales
+    const token = auth?.token || auth?.whatsappToken;
+    const phoneId = auth?.phoneId || auth?.whatsappPhoneId || auth?.phoneNumberId;
+
+    if (!token || !phoneId || !to) {
+        logger.error(`[SaaS Error] Datos insuficientes para envío. To: ${to}, Token: ${token ? 'OK' : 'FALTA'}, PhoneId: ${phoneId ? 'OK' : 'FALTA'}`);
+        return;
+    }
+
+    const url = `https://graph.facebook.com/v20.0/${phoneId}/messages`;
     
-    const url = `https://graph.facebook.com/v20.0/${phoneId}/messages`; // Actualizado a v20.0
+    // Normalización: si el payload es texto plano, lo envolvemos para Meta
+    let finalPayload = (typeof payload === 'string') ? { type: "text", text: { body: payload } } : payload;
 
-    const payload = typeof content === 'string'
-        ? { type: 'text', text: { body: content } } 
-        : content;
+    const body = {
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: to,
+        ...finalPayload 
+    };
 
     try {
-        await axios.post(url, {
-            messaging_product: 'whatsapp',
-            recipient_type: 'individual',
-            to: to,
-            ...payload
-        }, {
-            headers: { 
-                'Authorization': `Bearer ${token.trim()}`,
-                'Content-Type': 'application/json'
-            }
+        await axios.post(url, body, {
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
         });
     } catch (error) {
-        // 🔍 DEBUG AVANZADO: Esto nos dirá el error real de Meta
-        const errorData = error.response?.data;
-        if (errorData) {
-            logger.error(`[Meta API Error] Detalle: ${JSON.stringify(errorData, null, 2)}`);
-        } else {
-            logger.error(`[SaaS Error] Error de conexión: ${error.message}`);
-        }
+        const detail = error.response?.data?.error || error.message;
+        logger.error("[Meta API Error] " + JSON.stringify(detail));
     }
 };
 
 /**
- * Formatea y envía el menú completo al cliente usando texto plano.
- * @param {string} to - Número de teléfono del destinatario.
- */
-/**
- * Envía el menú filtrado por Restaurante y Disponibilidad.
+ * 3. ENVÍO DE MENÚ DINÁMICO
  */
 export const sendMenu = async (to, businessId, auth) => {
     try {
-        const diaActual = new Date().getDay(); // 0-6
-
-        // Dentro de sendMenu en utils.js
+        const diaActual = new Date().getDay(); 
         const menuItems = await MenuItem.find({ 
-            businessId, 
-            activo: true, 
-            disponible: true,
-            diasDisponibles: diaActual 
+            businessId, activo: true, disponible: true, diasDisponibles: diaActual 
         }).sort({ categoria: 1, nombre: 1 });
-
-        console.log(`[Debug] Platos encontrados para ${businessId}: ${menuItems.length}`); // <--- Añade esto
 
         if (menuItems.length === 0) {
             return await sendMessage(to, "Lo sentimos, hoy no tenemos productos disponibles. 😴", auth);
@@ -122,7 +87,6 @@ export const sendMenu = async (to, businessId, auth) => {
 
         let menuText = "*¡Bienvenido al Menú!* 🍔\n\n";
         let currentCategory = "";
-
         const menuMap = menuItems.map((item, index) => {
             const itemNumber = index + 1;
             if (item.categoria !== currentCategory) {
@@ -131,140 +95,173 @@ export const sendMenu = async (to, businessId, auth) => {
             }
             menuText += `[${itemNumber}] ${item.nombre} - ${formatPrice(item.precioBase)}\n`;
             if (item.descripcion) menuText += `   _${item.descripcion}_\n`;
-
             return { index: itemNumber, itemId: item._id, nombre: item.nombre };
         });
         
-        menuText += "\n👉 *Responde con el número* del producto.\n👉 *CARRITO*: Ver pedido.\n👉 *FINALIZAR*: Pagar.";
-
+        menuText += "\n👉 *CARRITO*: Revisar pedido.\n👉 *FINALIZAR*: Pagar.";
         await sendMessage(to, menuText, auth); 
         
-        // Guardamos el mapeo en el carrito para que Node sepa qué ID corresponde a cada número
-        await updateCart(to, businessId, { 
-            tempData: { menuMap: menuMap }, 
-            conversationState: 'MOSTRANDO_MENU' 
-        });
-
+        await updateCart(to, businessId, { tempData: { menuMap }, conversationState: 'MOSTRANDO_MENU' });
     } catch (error) {
-        logger.error('Error en sendMenu SaaS:', error);
+        logger.error('Error en sendMenu:', error);
     }
 };
 
 /**
- * Formatea y envía el resumen del carrito de compras.
- * @param {string} to - Número de teléfono del destinatario.
- * @param {object} cart - El objeto del carrito de ShoppingCart.
+ * 4. RESUMEN DE CARRITO (Mantiene tu lógica Enterprise original)
  */
-// 2. REEMPLAZA LA FUNCIÓN sendCartSummary POR ESTA:
-// src/whatsapp/utils.js
+// src/whatsapp/utils.js -> sendCartSummary
 
 export const sendCartSummary = async (to, cart, businessId, auth) => {
-    if (!cart.items || cart.items.length === 0) {
-        await sendMessage(to, "🛒 Tu carrito está vacío.", auth);
-        return;
-    }
-
-    // 1. EXTRAER DATOS PARA VALIDACIÓN DE "PEDIDO COMPLETO"
-    const { name, address, paymentMethod, deliveryMode } = cart.tempData;
-    
-    // Un pedido está completo si tiene Nombre, Pago, Modo y (si es delivery) Dirección.
-    const pedidoCompleto = !!(
-        name && 
-        paymentMethod && 
-        deliveryMode && 
-        (deliveryMode === 'PICKUP' || address)
-    );
-
-    let summaryText = "*🛒 Tu Carrito:*\n\n";
-    const restaurante = await Restaurante.findById(businessId).lean();
-
-    const { subtotal, envio, total, esPickup } = calcularTotalesFinales(
-        cart.items, 
-        deliveryMode, 
-        restaurante
-    );
-
-    // 2. LISTADO DE PRODUCTOS
-    cart.items.forEach((item, index) => {
-        const cantidad = item.cantidad || item.quantity || 1; 
-        summaryText += `${index + 1}. *${item.nombre}* (x${cantidad})\n`;
-        
-        const totalExtras = item.opcionesSeleccionadas?.reduce((a, b) => a + b.precioExtra, 0) || 0;
-        const precioBaseIndividual = item.precioUnitario - totalExtras;
-
-        if (item.notas) summaryText += `   _Nota: ${item.notas}_\n`; 
-
-        if (item.opcionesSeleccionadas?.length > 0) {
-            item.opcionesSeleccionadas.forEach(opt => {
-                const precioTexto = opt.precioExtra === 0 ? "" : ` (${formatPrice(opt.precioExtra)})`;
-                summaryText += `   + ${opt.opcionNombre}${precioTexto}\n`;
-            });
+    try {
+        if (!cart.items || cart.items.length === 0) {
+            return await sendMessage(to, "🛒 Tu carrito está vacío. ¡Echa un vistazo al menú! 🍔", auth);
         }
-        summaryText += `   *Subtotal: ${formatPrice(item.precioUnitario * cantidad)}*\n\n`;
-    });
-    
-    // 3. TOTALES FINANCIEROS
-    summaryText += `*Subtotal:* ${formatPrice(subtotal)}\n`;
-    if (envio > 0 || !esPickup) summaryText += `*Envío:* ${formatPrice(envio)}\n`;
-    summaryText += `*TOTAL: ${formatPrice(total)}*\n`;
 
-    // 4. SECCIÓN DE DATOS CAPTURADOS (Confianza)
-    if (name || address || paymentMethod) {
-        summaryText += `\n──────────────\n*Datos de entrega:*`;
-        if (name) summaryText += `\n👤 *Cliente:* ${name}`;
-        if (deliveryMode) summaryText += `\n🛵 *Modo:* ${deliveryMode === 'DELIVERY' ? 'A domicilio' : 'Recoger en tienda'}`;
-        if (address && deliveryMode === 'DELIVERY') summaryText += `\n📍 *Dirección:* ${address}`;
-        if (paymentMethod) summaryText += `\n💳 *Pago:* ${paymentMethod}`;
-    }
+        const { name, address, paymentMethod, deliveryMode } = cart.tempData;
+        const restaurante = await Restaurante.findById(businessId).lean();
 
-    summaryText += `\n──────────────\n`;
-    
-    // 5. FOOTER INTELIGENTE (ELIMINA REDUNDANCIA)
-    if (pedidoCompleto || cart.conversationState === 'CONFIRMANDO_PEDIDO') {
-        summaryText += "✅ *¡Todo listo!* Ya tenemos tus datos.\n👉 Escribe *CONFIRMAR* para enviar a cocina.";
+        // 1. Cálculo de autoridad financiera (Regla de Oro: Centavos)
+        const { subtotal, envio, total, esPickup } = calcularTotalesFinales(
+            cart.items, 
+            deliveryMode, 
+            restaurante
+        );
+
+        // 2. Construcción Visual del Cuerpo
+        let summaryText = "📝 *RESUMEN DE TU PEDIDO*\n";
+        summaryText += "━━━━━━━━━━━━━━\n\n";
+
+        cart.items.forEach((item, index) => {
+            const cantidad = item.cantidad || 1; 
+            summaryText += `*${cantidad}x ${item.nombre}*\n`;
+            
+            // Mostrar notas de cocina si existen
+            if (item.notas) summaryText += `_Nota: ${item.notas}_\n`; 
+
+            // Mostrar modificadores (pizzas con extra queso, etc.)
+            if (item.opcionesSeleccionadas?.length > 0) {
+                item.opcionesSeleccionadas.forEach(opt => {
+                    const precioExtra = opt.precioExtra > 0 ? ` (+${formatPrice(opt.precioExtra)})` : "";
+                    summaryText += `  + ${opt.opcionNombre}${precioExtra}\n`;
+                });
+            }
+            summaryText += `Subtotal: ${formatPrice(item.precioUnitario * cantidad)}\n\n`;
+        });
         
-        // Sincronizamos el estado de la conversación si no lo estaba
-        if (cart.conversationState !== 'CONFIRMANDO_PEDIDO') {
-            await updateCart(to, businessId, { conversationState: 'CONFIRMANDO_PEDIDO' });
-        }
-    } else {
-        summaryText += "👉 *FINALIZAR*: Pagar pedido.\n👉 *QUITAR [X]*: Eliminar producto.";
-    }
+        summaryText += "━━━━━━━━━━━━━━\n";
+        summaryText += `*Subtotal:* ${formatPrice(subtotal)}\n`;
+        if (envio > 0 && !esPickup) summaryText += `*Envío:* ${formatPrice(envio)}\n`;
+        summaryText += `*TOTAL:* ${formatPrice(total)}\n`;
 
-    await sendMessage(to, summaryText, auth);
+        // 3. Sección de Logística y Pago (Solo se muestra lo que ya se capturó)
+        if (name || deliveryMode || paymentMethod) {
+            summaryText += "\n📍 *DATOS DE ENTREGA*";
+            if (name) summaryText += `\n👤 *Cliente:* ${name}`;
+            if (deliveryMode) summaryText += `\n🛵 *Modo:* ${deliveryMode === 'DELIVERY' ? 'A domicilio' : 'Recoger en tienda'}`;
+            if (address && deliveryMode === 'DELIVERY') summaryText += `\n🏠 *Dirección:* ${address}`;
+            if (paymentMethod) summaryText += `\n💳 *Pago:* ${paymentMethod}`;
+        }
+
+        // 4. Lógica de Botones (Máximo 3 según Meta API)
+        // Un pedido está completo SOLO si tiene: Nombre, Pago, Modo y (si es Delivery) Dirección.
+        const pedidoCompleto = !!(
+            name && 
+            paymentMethod && 
+            deliveryMode && 
+            (deliveryMode === 'PICKUP' || address)
+        );
+
+        let buttons = [];
+        if (pedidoCompleto) {
+            // Escenario: Todo listo para Confirmar
+            buttons = [
+                { id: "BTN_CONFIRMAR_FINAL", title: "✅ Confirmar Pedido" },
+                { id: "BTN_LANZAR_LISTA_QUITAR", title: "🗑️ Quitar algo" },
+                { id: "MENU", title: "📋 Ver Menú" }
+            ];
+            summaryText += "\n\n⚠️ *Revisa tus datos arriba.* Si todo es correcto, pulsa Confirmar.";
+        } else {
+            // Escenario: Faltan datos (Ir al Checkout Inteligente)
+            buttons = [
+                { id: "BTN_CHECKOUT", title: "🚀 Finalizar Pedido" },
+                { id: "BTN_LANZAR_LISTA_QUITAR", title: "🗑️ Quitar algo" },
+                { id: "MENU", title: "📋 Seguir Pidiendo" }
+            ];
+            summaryText += "\n\n👉 Pulsa *Finalizar Pedido* para completar tus datos de envío.";
+        }
+
+        // 5. Envío de Mensaje Interactivo Único
+        await sendMessage(to, {
+            type: "interactive",
+            interactive: {
+                type: "button",
+                body: { text: summaryText },
+                action: {
+                    buttons: buttons.map(btn => ({
+                        type: "reply",
+                        reply: { id: btn.id, title: btn.title }
+                    }))
+                }
+            }
+        }, auth);
+
+    } catch (error) {
+        logger.error("Error crítico en sendCartSummary Enterprise:", error);
+        // Fallback en caso de error para no dejar al usuario colgado
+        await sendMessage(to, "Hubo un problema al generar el resumen, pero tu carrito está a salvo. Escribe *CARRITO* para reintentar.", auth);
+    }
 };
 
 /**
- * Envía un mensaje interactivo con botones para elegir el método de pago.
- * @param {string} to - Número de teléfono del destinatario.
+ * 5. MÉTODOS DE PAGO DINÁMICOS
  */
+// src/whatsapp/utils.js -> sendPaymentMethodOptions
 
-// Añade 'businessId' y 'auth' a los parámetros
 export const sendPaymentMethodOptions = async (to, businessId, auth) => {
     try {
-        // 🛑 Pasar businessId al servicio para traer los pagos de ese restaurante
-        const config = await getGlobalConfig(businessId);
-        const acceptedMethods = config.acceptedPaymentMethods || ['Efectivo'];
+        // 1. Buscamos el restaurante y su configuración
+        const restaurante = await Restaurante.findById(businessId).select('configuracion nombre').lean();
         
-        const buttons = acceptedMethods.map(method => ({
-            type: "reply",
-            reply: {
-                id: `PAYMENT_${method.toUpperCase().replace(/\s/g, '_')}`, 
-                title: method 
-            }
-        }));
+        if (!restaurante) {
+            logger.error(`[SaaS Error] No se encontró el restaurante ${businessId} para cargar pagos.`);
+            return await sendMessage(to, "Lo sentimos, hay un error en la configuración de pagos. Por favor, intenta más tarde.", auth);
+        }
+
+        // 2. Extraer métodos de pago (Probamos ambos nombres comunes en tu estructura)
+        const methods = restaurante.configuracion?.metodosPago || 
+                        restaurante.configuracion?.acceptedPaymentMethods || 
+                        ['Efectivo'];
+
+        // Debug para consola (Te dirá exactamente qué encontró)
+        console.log(`[SaaS Debug] Métodos para ${restaurante.nombre}:`, methods);
+
+        // 3. Crear botones (Máximo 3 por Meta API)
+        const buttons = methods.slice(0, 3).map(method => {
+            const cleanMethod = method.trim();
+            return {
+                type: "reply",
+                reply: {
+                    // ID único para el Webhook: PAYMENT_EFECTIVO, PAYMENT_TARJETA, etc.
+                    id: `PAYMENT_${cleanMethod.toUpperCase().replace(/\s/g, '_')}`, 
+                    title: cleanMethod 
+                }
+            };
+        });
         
         const interactivePayload = {
             type: 'interactive',
             interactive: {
                 type: 'button',
-                body: { text: "*💳 Elige tu Método de Pago:*" },
-                action: { buttons: buttons }
+                body: { text: "*💳 Elige tu Método de Pago:*\n\n¿Cómo prefieres pagar tu pedido?" },
+                action: { buttons }
             }
         };
 
-        await sendMessage(to, interactivePayload, auth); // 🛑 Usar auth dinámico
+        await sendMessage(to, interactivePayload, auth);
     } catch (error) {
-        logger.error(`Error pagos SaaS:`, error);
+        logger.error(`Error en sendPaymentMethodOptions SaaS:`, error);
+        // Fallback de emergencia
+        await sendMessage(to, "Por ahora solo aceptamos Efectivo. ¿Te parece bien?", auth);
     }
 };

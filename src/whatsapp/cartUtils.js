@@ -1,70 +1,74 @@
-// src/whatsapp/cartUtils.js - VERSIÓN PROTEGIDA CONTRA CASTERROR
+// src/whatsapp/cartUtils.js - VERSIÓN UNIFICADA (Nivel Square)
 
 import ShoppingCart from '../models/ShoppingCart.js';
 import MenuItem from '../models/MenuItem.js';
 import logger from '../utils/logger.js';
 
 /**
- * 1. Obtener o crear el carrito con aislamiento de restaurante (Multi-tenant)
+ * 1. Obtener o crear el carrito (Multi-tenant)
+ * Estandarizamos a 'whatsappId' para ser coherentes con el Webhook y Meta
  */
-export const getOrCreateCart = async (userId, businessId) => {
-  // Buscamos el carrito que coincida con el usuario Y el restaurante
-  let cart = await ShoppingCart.findOne({ clientPhone: userId, businessId: businessId }); 
+export const getOrCreateCart = async (whatsappId, businessId) => {
+  // Buscamos por whatsappId y businessId para el aislamiento multi-tenant
+  let cart = await ShoppingCart.findOne({ whatsappId, businessId }); 
 
   if (!cart) {
     cart = new ShoppingCart({ 
-        clientPhone: userId, 
-        businessId: businessId,
-        items: [] 
+        whatsappId, 
+        businessId,
+        items: [],
+        totalCents: 0, // Inicializamos para evitar NaNs en cálculos
+        tempData: { history: [], menuMap: [] }
     });
     await cart.save();
-    logger.info(`[SaaS] Nuevo carrito creado para ${userId} en Restaurante ${businessId}`); 
+    logger.info(`[SaaS] Carrito creado: ${whatsappId} en Negocio ${businessId}`); 
   }
   return cart;
 };
 
+// Antes de añadir, verificar disponibilidad real
+const stockDisponible = itemData.cantidad_diaria - itemData.vendidas_hoy;
+const cantidadEnCarrito = cart.items
+    .filter(i => i.itemId.toString() === itemId)
+    .reduce((acc, curr) => acc + curr.cantidad, 0);
+
+if (cantidadEnCarrito + quantity > stockDisponible) {
+    return { success: false, reason: 'SIN_STOCK', disponible: stockDisponible };
+}
 
 /**
- * 2. Añadir ítem complejo con modificadores y validación de reglas
+ * 2. Añadir ítem con validación de Stock y Modificadores
  */
-// src/whatsapp/cartUtils.js
-
-export const addItemToCart = async (userId, businessId, itemDetails) => {
-  // CORRECCIÓN 1: Extraemos 'notas' (español) para coincidir con el Validador
+export const addItemToCart = async (whatsappId, businessId, itemDetails) => {
   const { itemId, quantity, opcionesSeleccionadas, notas } = itemDetails;
 
-  const itemData = await MenuItem.findOne({ _id: itemId, businessId: businessId });
+  // Validación de seguridad: el producto debe pertenecer al negocio
+  const itemData = await MenuItem.findOne({ _id: itemId, businessId });
 
   if (!itemData || !itemData.activo) {
-    logger.warn(`[Seguridad] Intento de añadir producto inválido: ${itemId}`);
+    logger.warn(`[Seguridad] Producto inválido o inactivo: ${itemId}`);
     return { success: false, reason: 'PRODUCTO_NO_DISPONIBLE' };
   }
 
+  // Cálculo de precio por unidad (Base + Modificadores)
   let precioFinalUnidad = itemData.precioBase;
   if (opcionesSeleccionadas && opcionesSeleccionadas.length > 0) {
       precioFinalUnidad += opcionesSeleccionadas.reduce((total, opt) => total + (opt.precioExtra || 0), 0);
   }
 
-  const disponibleHoy = itemData.cantidad_diaria - itemData.vendidas_hoy;
-  if (quantity > disponibleHoy) {
-    return { success: false, reason: 'SIN_STOCK', available: disponibleHoy };
-  }
+  const cart = await getOrCreateCart(whatsappId, businessId);
 
-  const cart = await getOrCreateCart(userId, businessId);
-
-  /**
-   * CORRECCIÓN 2: Lógica de Agrupación
-   * Un producto es "el mismo" solo si tiene el mismo ID, mismas opciones Y MISMAS NOTAS.
-   * Si no comparamos las notas, la pizza "con picante" se fusionaría con la "sin picante".
-   */
+  // LÓGICA DE AGRUPACIÓN ENTERPRISE:
+  // Se agrupa solo si: Mismo ID + Mismas opciones + Mismas NOTAS
   const itemIndex = cart.items.findIndex(i => 
     i.itemId.toString() === itemId.toString() && 
     JSON.stringify(i.opcionesSeleccionadas) === JSON.stringify(opcionesSeleccionadas) &&
-    (i.notas || "") === (notas || "") // <--- IMPORTANTE: Comparar notas
+    (i.notas || "").trim() === (notas || "").trim()
   );
 
   if (itemIndex > -1) {
     cart.items[itemIndex].cantidad += quantity;
+    // Recalculamos subtotal del item si fuera necesario
   } else {
     cart.items.push({
       itemId,
@@ -72,29 +76,30 @@ export const addItemToCart = async (userId, businessId, itemDetails) => {
       precioUnitario: precioFinalUnidad,
       cantidad: quantity,
       opcionesSeleccionadas,
-      notas: notas || "" // <--- Guardamos como 'notas'
+      notas: notas || ""
     });
   }
+
+  // REGLA DE ORO: Recalcular totalCents del carrito antes de guardar
+  cart.totalCents = cart.items.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
 
   await cart.save();
   return { success: true, name: itemData.nombre, totalPrice: precioFinalUnidad * quantity };
 };
 
-
 /**
- * 3. Actualizar estado de la conversación (Multi-tenant)
+ * 3. Actualizar estado y metadatos
  */
-// src/whatsapp/cartUtils.js
-
-export const updateCart = async (userId, businessId, updates) => {
-  const cart = await getOrCreateCart(userId, businessId);
+export const updateCart = async (whatsappId, businessId, updates) => {
+  const cart = await getOrCreateCart(whatsappId, businessId);
   
   if (updates.conversationState) cart.conversationState = updates.conversationState;
   if (updates.tempData) cart.tempData = { ...cart.tempData, ...updates.tempData };
   
-  // 🌟 CORRECCIÓN CRÍTICA: Permitir que el array de items se actualice
   if (updates.items) {
       cart.items = updates.items;
+      // Si actualizamos items manualmente, recalculamos el total
+      cart.totalCents = cart.items.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
   }
 
   await cart.save();
@@ -102,30 +107,28 @@ export const updateCart = async (userId, businessId, updates) => {
 };
 
 /**
- * 4. Eliminar un ítem del carrito por su índice (Protegido por Multi-tenant)
+ * 4. Eliminar ítem por Índice (Única función para Botones y Comandos)
+ * @param {number} index - Índice 0-based
  */
-export const removeItemFromCart = async (userId, businessId, itemIndex) => {
-  try {
-      // Obtenemos el carrito específico de este usuario en este restaurante
-      const cart = await getOrCreateCart(userId, businessId);
-      
-      // El comando del usuario suele ser "QUITAR 1", pero los arrays inician en 0
-      const indexToRemove = itemIndex - 1; 
+export const removeItemByIndex = async (whatsappId, businessId, index) => {
+    const cart = await ShoppingCart.findOne({ whatsappId, businessId });
+    if (!cart || !cart.items[index]) return { success: false, reason: 'ITEM_NOT_FOUND' };
 
-      if (indexToRemove >= 0 && indexToRemove < cart.items.length) {
-        const removedItem = cart.items.splice(indexToRemove, 1);
-        logger.info(`[SaaS] Ítem "${removedItem[0].nombre}" eliminado del carrito de ${userId}`);
+    const removedName = cart.items[index].nombre;
+    
+    // Eliminamos del array
+    cart.items.splice(index, 1);
 
-        // Actualizamos la actividad y guardamos
-        cart.lastActivity = Date.now();
-        await cart.save();
-        
-        return { success: true, removedName: removedItem[0].nombre };
-      } else {
-        return { success: false, reason: 'INDICE_INVALIDO' };
-      }
-  } catch (error) {
-      logger.error(`Error al eliminar ítem del carrito: ${error.message}`);
-      return { success: false, reason: 'ERROR_INTERNO' };
-  }
+    // Si el carrito queda vacío, lo reseteamos o eliminamos
+    if (cart.items.length === 0) {
+        cart.totalCents = 0;
+        cart.conversationState = 'INICIO';
+        cart.tempData.lastProductDiscussed = null;
+    } else {
+        // Recalculamos el total (Regla de Oro de Finanzas)
+        cart.totalCents = cart.items.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
+    }
+
+    await cart.save();
+    return { success: true, removedName, empty: cart.items.length === 0 };
 };

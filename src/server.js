@@ -1,124 +1,92 @@
-// src/server.js - CÓDIGO FINAL CORREGIDO Y COMPLETO PARA EL PANEL
-
+// src/server.js
 import 'dotenv/config';
-
-// === CONFIGURACIÓN BASE ===
-// Asegurar que la zona horaria del proceso se mantenga si está definida
-if (process.env.TZ) {
-    process.env.TZ = process.env.TZ;
-}
-
 import express from 'express';
 import mongoose from 'mongoose';
 import cors from 'cors'; 
+import crypto from 'crypto'; // 🛡️ Para validación criptográfica
+import rateLimit from 'express-rate-limit'; // 🛡️ Para protección económica
 import logger from './utils/logger.js'; 
-// ==========================================================
 
-// === IMPORTACIONES DE MODELOS ===
-import Configuracion from './models/Configuracion.js';
-import MenuItem from './models/MenuItem.js'; 
-import GlobalConfig from './models/GlobalConfig.js'; 
-// ==========================================================
-
-// === IMPORTACIONES DE RUTAS Y WEBHOOK ===
+// === IMPORTACIONES DE RUTAS ===
 import menuRoutes from './routes/menu.routes.js';
 import orderRoutes from './routes/order.routes.js';
 import configRouter from './routes/config.routes.js';
-// 🛑 CORRECCIÓN CRÍTICA: Importamos el router completo como default 🛑
 import webhookRouter from './whatsapp/webhook.js'; 
-// ==========================================================
 
-// === App y puerto ===
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// === Middleware Global ===
-app.use(express.json()); 
+/**
+ * 🛡️ CAPA DE SEGURIDAD 1: Verificación de Firma HMAC SHA256
+ * Esta función intercepta el cuerpo del mensaje "crudo" (raw body) 
+ * antes de que Express lo convierta en JSON. Es la única forma de 
+ * validar que el mensaje viene REALMENTE de Meta.
+ */
+const verifyMetaSignature = (req, res, buf, encoding) => {
+    const signature = req.headers['x-hub-signature-256'];
+    
+    // Solo validamos si es una petición al webhook de WhatsApp
+    if (req.originalUrl.startsWith('/webhook') && req.method === 'POST') {
+        if (!signature) {
+            logger.warn(`🚨 Intento de acceso sin firma desde IP: ${req.ip}`);
+            throw new Error('Firma ausente. Petición rechazada.');
+        }
+
+        const elements = signature.split('=');
+        const signatureHash = elements[1];
+        const expectedHash = crypto
+            .createHmac('sha256', process.env.WHATSAPP_APP_SECRET) // Tu secreto de Meta
+            .update(buf) // El buffer crudo del mensaje
+            .digest('hex');
+
+        if (signatureHash !== expectedHash) {
+            logger.error(`❌ ALERTA: Firma inválida detectada desde IP: ${req.ip}`);
+            throw new Error('Firma inválida. Intento de intrusión detectado.');
+        }
+    }
+};
+
+// === MIDDLEWARES GLOBALES ===
+
+// 🛡️ Aplicamos la verificación de firma dentro del parseador de JSON
+app.use(express.json({ verify: verifyMetaSignature })); 
 app.use(cors()); 
 
-logger.info(`[VERIFICACIÓN ZONA HORARIA] Hora local actual del proceso: ${new Date().toLocaleString()}`);
+// 🛡️ CAPA DE SEGURIDAD 2: Rate Limiting (Protección de DDoS y Costos de IA)
+// Limitamos las peticiones globales para evitar abusos
+const generalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutos
+    max: 100, // 100 peticiones por IP cada 15 min
+    message: "Demasiadas peticiones desde esta red."
+});
+app.use('/api/', generalLimiter);
 
+// === INTEGRACIÓN DE RUTAS ===
 
-// === FUNCIONES DE INICIALIZACIÓN (Utilizando el modelo GlobalConfig proporcionado) ===
+// Rutas de WhatsApp (El Webhook)
+app.use(webhookRouter); 
 
-async function crearGlobalConfigInicial() {
-    const count = await GlobalConfig.countDocuments({ clientId: 'GLOBAL_RESTAURANT' });
-    if (count === 0) {
-        // Aseguramos que el costo de envío exista para la nueva lógica
-        await GlobalConfig.create({
-            clientId: 'GLOBAL_RESTAURANT',
-            acceptedPaymentMethods: ['Efectivo', 'Transferencia', 'Tarjeta'], 
-            closedMessage: '¡Hola! Nuestro horario de atención es limitado. Estamos cerrados ahora mismo.',
-            costoEnvioCents: 3000, // Añadido para la consistencia del servicio
-            transferDetailsMessage: "CLABE: 0123456789. Enviar comprobante al 999 555 1234."
-        });
-        logger.info('✅ Configuración global de pagos/mensajes inicial creada.');
-    }
-}
+// Rutas de API para el Dashboard
+app.use('/api/menu', menuRoutes); 
+app.use('/api/pedidos', orderRoutes); 
+app.use('/api/config', configRouter); 
 
-async function crearConfiguracionInicial() {
-    const count = await Configuracion.countDocuments({ nombre: 'horarios_operacion' });
-    if (count === 0) {
-        await Configuracion.create({
-            nombre: 'horarios_operacion',
-            dias_operacion: [
-                { dia: 'LUNES', activo: true, turnos: [{ apertura: '12:00', cierre: '22:00' }] },
-                { dia: 'MARTES', activo: true, turnos: [{ apertura: '12:00', cierre: '22:00' }] },
-                // Añade el resto de días
-            ],
-            mensaje_cerrado: 'Estamos cerrados. Vuelve mañana a las 12:00.'
-        });
-        logger.info('✅ Configuración de horarios inicial creada en MongoDB.');
-    }
-}
+// RUTA DE PRUEBA
+app.get('/', (req, res) => {
+    res.json({ status: 'online', version: '2.0.0-square-level' });
+});
 
-async function crearMenuInicial() {
-    const count = await MenuItem.countDocuments();
-    if (count === 0) {
-        await MenuItem.create([
-            { nombre: "Hamburguesa Clásica", precio: 5500, cantidad_diaria: 10, alerta_en: 7, categoria: 'HAMBURGUESAS' },
-            { nombre: "Papas Fritas", precio: 2000, cantidad_diaria: 25, alerta_en: 5, categoria: 'COMPLEMENTOS' },
-            { nombre: "Coca Cola", precio: 1500, cantidad_diaria: 50, alerta_en: 10, categoria: 'BEBIDAS' },
-        ]);
-        logger.info('Menú inicial creado con stock diario');
-    }
-}
-
-
-// === CONEXIÓN A MONGODB Y LLAMADA A INICIALIZACIONES ===
+// === CONEXIÓN A MONGODB Y ARRANQUE ===
 mongoose.connect(process.env.MONGODB_URI)
-  .then(async () => { 
-    logger.info('MongoDB conectado - ¡Base de datos lista!');
+  .then(() => { 
+    logger.info('✅ Conexión a MongoDB exitosa');
     
-    // 1. Ejecutar la creación de la DB
-    //await crearMenuInicial();
-    //await crearConfiguracionInicial();
-    //await crearGlobalConfigInicial(); 
-
-    // 2. === INTEGRACIÓN DE RUTAS ===
-    
-    // Rutas de API para el Frontend (TODAS bajo /api)
-    app.use('/api/menu', menuRoutes); 
-    app.use('/api/pedidos', orderRoutes); 
-    app.use('/api/config', configRouter); 
-    
-    // 🛑 Rutas de WhatsApp (Integra el router por defecto) 🛑
-    // El router de webhook.js ya contiene app.get('/webhook') y app.post('/webhook')
-    app.use(webhookRouter); 
-    
-    // RUTA DE PRUEBA
-    app.get('/', (req, res) => {
-        res.json({ mensaje: '¡Hola desde el Bot de Restaurante WhatsApp!' });
-    });
-
-    // 3. Arrancar el servidor Express
     app.listen(PORT, () => {
-        logger.info(`Servidor corriendo en http://localhost:${PORT}`);
-        logger.info(`Webhook listo en: http://localhost:${PORT}/webhook`);
+        logger.info(`🚀 Servidor Enterprise corriendo en puerto ${PORT}`);
+        logger.info(`🔐 Escudo HMAC SHA256 Activo para Webhook`);
     });
-
   })
   .catch(err => {
-      logger.error('Error MongoDB:', err.message);
+      logger.error('💥 Error crítico al iniciar servidor:', err.message);
       process.exit(1);
   });
