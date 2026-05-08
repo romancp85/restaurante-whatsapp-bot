@@ -46,7 +46,7 @@ export const addItemToCart = async (whatsappId, businessId, itemDetails) => {
       .reduce((acc, curr) => acc + curr.cantidad, 0);
 
   if (cantidadEnCarrito + quantity > stockDisponible) {
-      return { success: false, reason: 'SIN_STOCK', disponible: stockDisponible };
+      return { success: false, reason: 'SIN_STOCK', disponible: stockDisponible - cantidadEnCarrito, name: itemData.nombre };
   }
   // ------------------------------------
 
@@ -128,4 +128,39 @@ export const removeItemByIndex = async (whatsappId, businessId, index) => {
 
     await cart.save();
     return { success: true, removedName, empty: cart.items.length === 0 };
+};
+
+/**
+ * 🗑️ ELIMINACIÓN POR NOMBRE (Especial para Mateo IA)
+ */
+export const removeItemsByName = async (whatsappId, businessId, productName) => {
+    const cart = await ShoppingCart.findOne({ whatsappId, businessId });
+    if (!cart || cart.items.length === 0) return null;
+
+    const nombreBusqueda = productName.toLowerCase();
+    
+    // Filtramos: se quedan los productos que NO coincidan con lo que la IA quiere quitar
+    const itemsFiltrados = cart.items.filter(item => {
+        const itemNombre = item.nombre.toLowerCase();
+        // Comprobación de ida y vuelta para mayor precisión
+        return !itemNombre.includes(nombreBusqueda) && !nombreBusqueda.includes(itemNombre);
+    });
+
+    if (itemsFiltrados.length === cart.items.length) {
+        return cart; // No se borró nada, devolvemos el carrito igual
+    }
+
+    cart.items = itemsFiltrados;
+
+    // Si se vació, reseteamos a INICIO
+    if (cart.items.length === 0) {
+        cart.totalCents = 0;
+        cart.conversationState = 'INICIO';
+    } else {
+        // Recalculamos financiero
+        cart.totalCents = cart.items.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
+    }
+
+    await cart.save();
+    return cart;
 };

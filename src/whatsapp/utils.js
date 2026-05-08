@@ -74,7 +74,9 @@ export const sendMessage = async (arg1, arg2, arg3) => {
 /**
  * 3. ENVÍO DE MENÚ DINÁMICO
  */
-export const sendMenu = async (to, businessId, auth) => {
+// src/whatsapp/utils.js -> Función sendMenu
+
+export const sendMenu = async (to, businessId, auth, cart = null) => {
     try {
         const diaActual = new Date().getDay(); 
         const menuItems = await MenuItem.find({ 
@@ -85,27 +87,70 @@ export const sendMenu = async (to, businessId, auth) => {
             return await sendMessage(to, "Lo sentimos, hoy no tenemos productos disponibles. 😴", auth);
         }
 
-        let menuText = "*¡Bienvenido al Menú!* 🍔\n\n";
+        // 1. CONSTRUCCIÓN VISUAL DEL MENÚ
+        let menuText = "✨ *NUESTRO MENÚ* ✨\n";
+        menuText += "━━━━━━━━━━━━━━\n\n";
+
         let currentCategory = "";
         const menuMap = menuItems.map((item, index) => {
             const itemNumber = index + 1;
+            
+            // Separador de categoría elegante
             if (item.categoria !== currentCategory) {
                 currentCategory = item.categoria;
-                menuText += `\n*-- ${currentCategory.toUpperCase()} --*\n`;
+                const emoji = getCategoryEmoji(currentCategory);
+                menuText += `\n${emoji} *${currentCategory.toUpperCase()}*\n`;
             }
-            menuText += `[${itemNumber}] ${item.nombre} - ${formatPrice(item.precioBase)}\n`;
-            if (item.descripcion) menuText += `   _${item.descripcion}_\n`;
+
+            menuText += `*${itemNumber}.* ${item.nombre} - _${formatPrice(item.precioBase)}_\n`;
+            if (item.descripcion) menuText += `   └ ${item.descripcion}\n`;
+            
             return { index: itemNumber, itemId: item._id, nombre: item.nombre };
         });
         
-        menuText += "\n👉 *CARRITO*: Revisar pedido.\n👉 *FINALIZAR*: Pagar.";
+        menuText += "\n━━━━━━━━━━━━━━\n";
+        menuText += "💡 *Tip:* Puedes pedir por nombre o número. \n_Ej: 'Quiero 2 de la 5 y una Coca'_";
+
+        // 2. ENVÍO DEL CUERPO DEL MENÚ
         await sendMessage(to, menuText, auth); 
-        
+
+        // 2. 🌟 LÓGICA INTELIGENTE DE BOTONES
+        // Solo enviamos los botones de Carrito/Pago si el carrito tiene productos
+        if (cart && cart.items && cart.items.length > 0) {
+            const interactivePayload = {
+                type: "interactive",
+                interactive: {
+                    type: "button",
+                    body: { text: "Tienes productos en tu carrito. ¿Qué prefieres hacer? 👇" },
+                    action: {
+                        buttons: [
+                            { type: "reply", reply: { id: "BTN_VER_QUITAR", title: "🛒 Mi Carrito" } },
+                            { type: "reply", reply: { id: "BTN_CHECKOUT", title: "🚀 Ir a Pagar" } }
+                        ]
+                    }
+                }
+            };
+            await sendMessage(to, interactivePayload, auth);
+        }
+
+        // Guardamos el mapa en el carrito
         await updateCart(to, businessId, { tempData: { menuMap }, conversationState: 'MOSTRANDO_MENU' });
+
     } catch (error) {
         logger.error('Error en sendMenu:', error);
     }
 };
+
+// Helper simple para emojis
+function getCategoryEmoji(cat) {
+    const c = cat.toUpperCase();
+    if (c.includes('HAMBUR')) return '🍔';
+    if (c.includes('PIZZA')) return '🍕';
+    if (c.includes('BEBIDA') || c.includes('TOMAR')) return '🥤';
+    if (c.includes('POSTRE')) return '🍰';
+    if (c.includes('PROMO')) return '🔥';
+    return '📋';
+}
 
 /**
  * 4. RESUMEN DE CARRITO (Mantiene tu lógica Enterprise original)

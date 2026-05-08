@@ -1,5 +1,5 @@
 // src/whatsapp/webhook.js
-import express from 'express';
+/**import express from 'express';
 import { getOrCreateCart, updateCart, addItemToCart } from './cartUtils.js'; 
 import { sendMessage, sendMenu, sendCartSummary, sendPaymentMethodOptions, formatPrice } from './utils.js';
 import { analizarPedidoConIA } from '../utils/aiUtils.js'; 
@@ -8,6 +8,7 @@ import Restaurante from '../models/Restaurante.js';
 import { processFinalOrder } from './orderProcessor.js';
 import { verificarDisponibilidad } from '../utils/dateUtils.js';
 import { decrypt } from '../utils/cryptoUtils.js'; 
+import { enqueueOrder } from '../queues/orderQueue.js';
 import logger from '../utils/logger.js';
 import { getUltimoPedido, generarPropuestaVIP } from '../services/loyaltyService.js';
 import { calcularDistanciaKM } from '../utils/geoUtils.js';
@@ -258,148 +259,55 @@ async function handleAICheck(userId, text, cart, businessId, auth, restauranteCo
 // --- 6. RUTA POST PRINCIPAL ---
 const mensajesProcesados = new Set();
 
+// src/whatsapp/webhook.js
+
+import { enqueueOrder } from '../queues/orderQueue.js'; // 👈 Importamos la cola
+
 router.post('/webhook', async (req, res) => {
     try {
         const value = req.body.entry?.[0]?.changes?.[0]?.value;
         const messageObject = value?.messages?.[0];
+        
+        // 1. Si no hay mensaje, ignorar
         if (!messageObject) return res.sendStatus(200);
 
+        // 2. De-duplicación (Evita procesar el mismo ID dos veces si Meta lo reenvía)
         const messageId = messageObject.id;
         if (mensajesProcesados.has(messageId)) return res.sendStatus(200);
         mensajesProcesados.add(messageId);
         setTimeout(() => mensajesProcesados.delete(messageId), 300000);
 
-        const userId = messageObject.from;
+        // 3. Identificar Restaurante y Auth (Necesario para saber a qué cola mandar)
         const restaurante = await Restaurante.findOne({ whatsappPhoneId: value.metadata.phone_number_id });
         if (!restaurante) return res.sendStatus(200);
 
         const businessId = restaurante._id;
         const tokenReal = decrypt(restaurante.whatsappToken);
         const auth = { token: tokenReal, phoneId: restaurante.whatsappPhoneId };
-        let cart = await getOrCreateCart(userId, businessId);
 
-        // Handoff Check
-        if (cart.conversationState === 'ESPERANDO_AGENTE') return res.sendStatus(200);
-
-        // Disponibilidad
+        // 4. FAST-PATH: Disponibilidad (Validamos aquí para no gastar recursos si está cerrado)
         const disponibilidad = verificarDisponibilidad(restaurante);
         if (!disponibilidad.abierto) {
-            await enviarTexto(userId, disponibilidad.mensaje, auth);
+            await enviarTexto(messageObject.from, disponibilidad.mensaje, auth);
             return res.sendStatus(200);
         }
 
-        // Manejo de Interactivos
-        if (messageObject.type === 'interactive') {
-            const interactive = messageObject.interactive;
-            const actionId = interactive.button_reply?.id || interactive.list_reply?.id;
+        // 5. 🚀 EL CAMBIO CLAVE: ENCOLAR 
+        // No llamamos a IA, ni a GPS, ni a Botones. Solo mandamos los datos al Worker.
+        await enqueueOrder('WHATSAPP', {
+            userId: messageObject.from,
+            messageObject, // Mandamos el objeto completo para que el Worker vea si es texto, botón o GPS
+            businessId,
+            auth,
+            restauranteConfig: restaurante.configuracion
+        });
 
-            if (actionId === 'REPETIR_PEDIDO') {
-                const ultimo = await getUltimoPedido(userId, businessId);
-                if (ultimo) {
-                    await updateCart(userId, businessId, { 
-                        items: ultimo.items, 
-                        tempData: { ...cart.tempData, name: ultimo.nombreCliente, address: ultimo.direccionEntrega, deliveryMode: ultimo.entregaMode, paymentMethod: ultimo.metodoPago }
-                    });
-                    cart = await getOrCreateCart(userId, businessId);
-                    const resumenVip = `¡Genial! Cargué tu pedido anterior 🍔\n📍 *Entrega:* ${ultimo.entregaMode}\n🏠 *Dirección:* ${ultimo.direccionEntrega}\n💳 *Pago:* ${ultimo.metodoPago}\n\n¿Todo igual o cambiamos algo?`;
-                    await sendMessage(userId, {
-                        type: "interactive",
-                        interactive: {
-                            type: "button",
-                            body: { text: resumenVip },
-                            action: {
-                                buttons: [
-                                    { type: "reply", reply: { id: "VIP_CONFIRMAR_TODO", title: "✅ Todo igual" } },
-                                    { type: "reply", reply: { id: "VIP_CAMBIAR_DATOS", title: "✏️ Cambiar datos" } },
-                                    { type: "reply", reply: { id: "MENU_NUEVO", title: "📋 Ver Menú" } }
-                                ]
-                            }
-                        }
-                    }, auth);
-                    return res.sendStatus(200);
-                }
-            }
-
-            if (actionId === 'VIP_CONFIRMAR_TODO') return await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante), res.sendStatus(200);
-            
-            if (actionId === 'VIP_CAMBIAR_DATOS' || actionId === 'MENU_NUEVO') {
-                await updateCart(userId, businessId, { 
-                    conversationState: actionId === 'MENU_NUEVO' ? 'MOSTRANDO_MENU' : cart.conversationState,
-                    tempData: { ...cart.tempData, deliveryMode: null, address: null, paymentMethod: null } 
-                });
-                cart = await getOrCreateCart(userId, businessId);
-                if (actionId === 'MENU_NUEVO') return await sendMenu(userId, businessId, auth), res.sendStatus(200);
-                return await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante), res.sendStatus(200);
-            }
-
-            if (actionId === 'BTN_CHECKOUT') return await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante), res.sendStatus(200);
-            if (actionId === 'BTN_LANZAR_LISTA_QUITAR') return await enviarListaParaQuitar(userId, cart, auth), res.sendStatus(200);
-            if (actionId === 'BTN_VER_QUITAR' || actionId === 'CARRITO') return await sendCartSummary(userId, cart, businessId, auth), res.sendStatus(200);
-            if (actionId === 'MENU') return await sendMenu(userId, businessId, auth), res.sendStatus(200);
-            
-            if (actionId === 'BTN_CONFIRMAR_FINAL') {
-                const financieros = calcularTotalesFinales(cart.items, cart.tempData.deliveryMode, restaurante);
-                return await processFinalOrder(userId, cart, businessId, auth, financieros), res.sendStatus(200);
-            }
-
-            if (actionId?.startsWith('REMOVE_IDX_')) {
-                const index = parseInt(actionId.split('_')[2]);
-                await handleRemoveItem(userId, businessId, index, cart, auth);
-                return res.sendStatus(200);
-            }
-
-            if (actionId?.startsWith('MODE_')) cart.tempData.deliveryMode = actionId === 'MODE_DELIVERY' ? 'DELIVERY' : 'PICKUP';
-            if (actionId?.startsWith('PAYMENT_')) cart.tempData.paymentMethod = actionId.replace('PAYMENT_', '').replace(/_/g, ' ');
-
-            await updateCart(userId, businessId, { tempData: cart.tempData });
-            await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante);
-            return res.sendStatus(200);
-        }
-
-        // GPS
-        if (messageObject.type === 'location') {
-            const { latitude, longitude } = messageObject.location;
-            const [restLat, restLon] = restaurante.configuracion.ubicacionLocal?.split(',').map(Number) || [0,0];
-            const distancia = calcularDistanciaKM(latitude, longitude, restLat, restLon);
-            if (distancia > 5) {
-                await enviarTexto(userId, `📍 Estás a ${distancia.toFixed(1)}km. Solo entregamos a 5km. ¿Vienes por él?`, auth);
-                cart.tempData.deliveryMode = 'PICKUP';
-            } else {
-                cart.tempData.address = `https://www.google.com/maps?q=${latitude},${longitude}`;
-                cart.tempData.deliveryMode = 'DELIVERY';
-            }
-            await updateCart(userId, businessId, { tempData: cart.tempData });
-            await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante);
-            return res.sendStatus(200);
-        }
-
-        const text = (messageObject.text?.body || '').trim();
-        
-        // Handoff Manual
-        const frustracion = ['AGENTE', 'HUMANO', 'AYUDA'].some(k => text.toUpperCase().includes(k));
-        if (frustracion) {
-            await updateCart(userId, businessId, { conversationState: 'ESPERANDO_AGENTE' });
-            await enviarTexto(userId, "Entendido. Un humano te atenderá pronto. 👨‍💻", auth);
-            return res.sendStatus(200);
-        }
-
-        if (await manejarPorteroNivel1(text, userId, businessId, auth, cart, restaurante)) return res.sendStatus(200);
-
-        // FSM Captura
-        if (['PREGUNTANDO_NOMBRE', 'PREGUNTANDO_DIRECCION'].includes(cart.conversationState)) {
-            if (cart.conversationState === 'PREGUNTANDO_NOMBRE') cart.tempData.name = text;
-            else if (cart.conversationState === 'PREGUNTANDO_DIRECCION') cart.tempData.address = text;
-            await updateCart(userId, businessId, { tempData: cart.tempData });
-            await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante);
-            return res.sendStatus(200);
-        }
-
-        // IA
-        await handleAICheck(userId, text, cart, businessId, auth, restaurante.configuracion);
+        // 6. RESPONDER A META INMEDIATAMENTE
+        // Con esto Meta está feliz y no nos enviará duplicados por tardar mucho.
         res.sendStatus(200);
 
     } catch (error) {
-        logger.error('Error Webhook:', error);
+        logger.error('Error Webhook (Fast Path):', error);
         res.sendStatus(500);
     }
 });
@@ -409,6 +317,105 @@ router.get('/webhook', (req, res) => {
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
     if (mode === 'subscribe' && token === (process.env.VERIFY_TOKEN || "roman123")) return res.status(200).send(challenge);
+    res.sendStatus(403);
+});
+
+export default router;**/
+
+// src/whatsapp/webhook.js
+// src/whatsapp/webhook.js
+import express from 'express';
+import Restaurante from '../models/Restaurante.js';
+import { decrypt } from '../utils/cryptoUtils.js'; 
+import { verificarDisponibilidad } from '../utils/dateUtils.js';
+import { enqueueOrder } from '../queues/orderQueue.js'; 
+import { sendMessage } from './utils.js'; // 👈 1. SOLUCIÓN: Importación agregada (asumiendo que utils.js está en la misma carpeta)
+import logger from '../utils/logger.js';
+
+const router = express.Router();
+const mensajesProcesados = new Set();
+
+// Helper interno para el Fast-Path de cierre
+const enviarTextoRapido = async (userId, texto, auth) => {
+    await sendMessage(userId, { type: "text", text: { body: texto } }, auth);
+};
+
+router.post('/webhook', async (req, res) => {
+    try {
+        console.log("\n--- 📥 NUEVO EVENTO DESDE META ---");
+        
+        const value = req.body.entry?.[0]?.changes?.[0]?.value;
+        const messageObject = value?.messages?.[0];
+
+        // Filtro de seguridad: Si es una actualización de estado (leído, entregado), ignoramos y liberamos a Meta
+        if (!messageObject) {
+            console.log("[Fast-Path] Notificación de estado de Meta (Read/Delivered). Ignorando.");
+            return res.sendStatus(200);
+        }
+
+        // 1. Evitar duplicados (Idempotencia)
+        const messageId = messageObject.id;
+        if (mensajesProcesados.has(messageId)) {
+            console.log(`⚠️ [Fast-Path] Mensaje duplicado detectado y bloqueado: ${messageId}`);
+            return res.sendStatus(200);
+        }
+        mensajesProcesados.add(messageId);
+        setTimeout(() => mensajesProcesados.delete(messageId), 300000); // 5 minutos de memoria
+
+        // 2. Identificar el Restaurante (Multi-tenant)
+        const phoneId = value.metadata.phone_number_id;
+        const restaurante = await Restaurante.findOne({ whatsappPhoneId: phoneId });
+        
+        if (!restaurante) {
+            console.error(`❌ [Fast-Path Error] Ningún restaurante coincide con el Phone ID: ${phoneId}`);
+            return res.sendStatus(200);
+        }
+
+        console.log(`✅ [Fast-Path] Restaurante identificado: ${restaurante.nombre}`);
+
+        const businessId = restaurante._id.toString(); // Forzamos texto desde aquí
+        const tokenReal = decrypt(restaurante.whatsappToken);
+        const auth = { token: tokenReal, phoneId: restaurante.whatsappPhoneId };
+
+        // 3. 🛡️ VERIFICAR HORARIO (FAST-PATH DE AHORRO)
+        const disponibilidad = verificarDisponibilidad(restaurante);
+        if (!disponibilidad.abierto) {
+            console.log(`🏠 [Fast-Path] ${restaurante.nombre} está CERRADO. Enviando aviso de cierre.`);
+            
+            // 🌟 2. SOLUCIÓN: Enviamos el mensaje de cierre real configurado en tu DB
+            await enviarTextoRapido(messageObject.from, disponibilidad.mensaje, auth);
+            
+            return res.sendStatus(200); // Cortamos el flujo de inmediato
+        }
+
+        // 4. 🚀 ENCOLAR EN BULLMQ (Para el Worker asíncrono)
+        console.log("🚀 [Fast-Path] Mensaje válido y negocio abierto. Encolando en Redis...");
+        await enqueueOrder('WHATSAPP', {
+            userId: messageObject.from,
+            messageObject, 
+            businessId, // Ya viaja como String puro
+            auth,
+            restauranteConfig: restaurante.configuracion
+        });
+
+        console.log("✅ [Fast-Path] Encolado exitoso. Respondiendo 200 OK a Meta.");
+        res.sendStatus(200);
+
+    } catch (error) {
+        console.error('💥 [Fast-Path Critical Error] Fallo en la recepción del Webhook:', error);
+        res.sendStatus(500); // Meta reintentará el envío si respondemos 500
+    }
+});
+
+// GET para validación de Meta (Token de verificación)
+router.get('/webhook', (req, res) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+    if (mode === 'subscribe' && token === (process.env.VERIFY_TOKEN || "roman123")) {
+        console.log("🔒 Webhook validado con éxito por Meta.");
+        return res.status(200).send(challenge);
+    }
     res.sendStatus(403);
 });
 

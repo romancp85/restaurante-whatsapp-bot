@@ -3,29 +3,34 @@ import Pedido from '../models/Pedido.js';
 import Restaurante from '../models/Restaurante.js';
 import { sendMessage } from '../whatsapp/utils.js';
 import { decrypt } from '../utils/cryptoUtils.js';
+import { enqueueOrder } from '../queues/orderQueue.js'; // 👈 ESTA ERA LA IMPORTACIÓN QUE FALTABA
 import logger from '../utils/logger.js';
 
 /**
- * @desc Obtener pedidos activos de UN restaurante específico
+ * @desc Obtener pedidos activos (Protegido por Token)
  */
 export const getActiveOrders = async (req, res) => {
     try {
-        const { businessId } = req.query; // El ID del restaurante logueado
+        // 🛡️ REGLA SaaS: El businessId viene del middleware verificarToken
+        const businessId = req.businessId; 
+
         const activeStatuses = ['Pendiente', 'Confirmado', 'En Preparación', 'En Camino'];
         
         const pedidos = await Pedido.find({ 
-            businessId,
+            businessId: businessId, // Solo traemos los pedidos DE ESTE restaurante
             estado: { $in: activeStatuses }
-        }).sort({ createdAt: -1 }); // El más reciente arriba
+        }).sort({ createdAt: -1 });
 
         res.status(200).json(pedidos);
     } catch (error) {
-        res.status(500).json({ message: 'Error al obtener pedidos.' });
+        logger.error('Error al obtener pedidos:', error);
+        res.status(500).json({ message: 'Error interno del servidor.' });
     }
 };
 
+
 /**
- * @desc Actualizar estado y NOTIFICAR por WhatsApp
+ * @desc Actualizar estado (Protegido por Token)
  */
 export const updateOrderStatus = async (req, res) => {
     const { id } = req.params;
@@ -33,37 +38,58 @@ export const updateOrderStatus = async (req, res) => {
 
     try {
         const pedido = await Pedido.findById(id);
-        if (!pedido) return res.status(404).json({ message: 'Pedido no encontrado.' });
+
+        // 🛡️ REGLA SaaS: Comparar IDs como String para evitar fallos de Objeto vs Texto
+        if (!pedido || pedido.businessId.toString() !== req.businessId.toString()) {
+            return res.status(404).json({ message: 'Pedido no autorizado.' });
+        }
 
         pedido.estado = nuevoEstado;
         await pedido.save();
 
-        // 🚀 LÓGICA DE NOTIFICACIÓN AUTOMÁTICA
+        // 🚀 NOTIFICACIÓN
         const restaurante = await Restaurante.findById(pedido.businessId);
         const tokenReal = decrypt(restaurante.whatsappToken);
         const auth = { token: tokenReal, phoneId: restaurante.whatsappPhoneId };
 
-        let mensajeWhatsApp = "";
-        switch (nuevoEstado) {
-            case 'Confirmado':
-                mensajeWhatsApp = `✅ *¡Buenas noticias, ${pedido.nombreCliente}!* Tu pedido #${pedido.numero_pedido} ha sido confirmado y ya entró a cocina. 👨‍🍳`;
-                break;
-            case 'En Camino':
-                mensajeWhatsApp = `🛵 *¡Tu pedido #${pedido.numero_pedido} va en camino!* El repartidor llegará pronto a tu ubicación.`;
-                break;
-            case 'Entregado':
-                mensajeWhatsApp = `🌟 *¡Pedido entregado!* Que disfrutes tu comida. Si te gustó nuestro servicio, ¡recomiéndanos! 😋`;
-                break;
+        let msg = "";
+        if (nuevoEstado === 'Confirmado') msg = `✅ *¡Hola ${pedido.nombreCliente}!* Tu pedido #${pedido.numero_pedido} fue confirmado.`;
+        if (nuevoEstado === 'En Camino') msg = `🛵 *¡Tu pedido #${pedido.numero_pedido} va en camino!*`;
+        if (nuevoEstado === 'Entregado') msg = `🌟 *¡Gracias por tu compra!* Que disfrutes tu comida.`;
+
+        if (msg && pedido.telefonoCliente !== 'MOSTRADOR') {
+            await sendMessage(pedido.telefonoCliente, msg, auth);
         }
 
-        if (mensajeWhatsApp) {
-            await sendMessage(pedido.telefonoCliente, mensajeWhatsApp, auth);
-        }
-
-        res.status(200).json({ message: `Estado actualizado a ${nuevoEstado}`, pedido });
-
+        res.status(200).json({ message: "Estado actualizado", pedido });
     } catch (error) {
-        logger.error(`Error al actualizar pedido ${id}:`, error);
-        res.status(400).json({ message: 'Error al actualizar el estado.' });
+        res.status(400).json({ message: 'Error' });
+    }
+};
+
+/**
+ * @desc Crear pedido directo (Protegido por Token)
+ */
+export const createDirectOrder = async (req, res) => {
+    try {
+        const { items, customerName, customerPhone, metodoPago, deliveryMode, direccionEntrega } = req.body;
+
+        if (!items || items.length === 0) return res.status(400).json({ message: "Pedido vacío" });
+
+        await enqueueOrder('DIRECTO', {
+            businessId: req.businessId,
+            items,
+            tempData: { 
+                name: customerName, 
+                phone: customerPhone,
+                paymentMethod: metodoPago, 
+                deliveryMode: deliveryMode,
+                address: direccionEntrega
+            }
+        });
+
+        res.status(202).json({ message: "Pedido en cola" });
+    } catch (error) {
+        res.status(500).json({ message: "Error interno" });
     }
 };

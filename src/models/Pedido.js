@@ -112,7 +112,16 @@ const pedidoSchema = new Schema({
         ref: 'Restaurante', 
         required: true, 
         index: true 
-    }
+    },
+    // Añadir al PedidoSchema
+    source: { 
+        type: String, 
+        enum: ['WHATSAPP', 'DIRECTO', 'WEB'], 
+        default: 'WHATSAPP' 
+    },
+    // El clienteId ahora puede ser el teléfono o 'WALK-IN'
+    clienteId: { type: String, required: true }
+    
 }, { timestamps: true });
 
 // APLICAR EL PLUGIN DE AUTO-INCREMENTO

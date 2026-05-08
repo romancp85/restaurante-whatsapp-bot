@@ -1,10 +1,20 @@
 // src/routes/order.routes.js
 import express from 'express';
-import { getActiveOrders, updateOrderStatus } from '../controllers/order.controller.js';
+import { verificarToken } from '../middleware/auth.middleware.js';
+// 🛑 ASEGÚRATE DE QUE ESTÉ EN ESTA LISTA 🛑
+import { 
+    getActiveOrders, 
+    updateOrderStatus, 
+    createDirectOrder 
+} from '../controllers/order.controller.js';
 
 const router = express.Router();
 
-router.get('/', getActiveOrders); // GET /api/pedidos?businessId=...
-router.put('/:id/status', updateOrderStatus); // PUT /api/pedidos/:id/status
+// 🛡️ Todas las rutas de abajo requieren token
+router.use(verificarToken); 
+
+router.get('/', getActiveOrders); 
+router.put('/:id/status', updateOrderStatus);
+router.post('/directo', createDirectOrder);
 
 export default router;
