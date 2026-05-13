@@ -1,24 +1,14 @@
-// src/routes/menu.routes.js (VERSIÓN FINAL)
-
+// src/routes/menu.routes.js
 import express from 'express';
-// Asegúrate de que esta importación de controlador sea correcta
-import { 
-    getAllMenuItems, 
-    createMenuItem, 
-    updateMenuItem, 
-    deleteMenuItem 
-} from '../controllers/menu.controller.js'; 
+import { getMenuByBusiness, upsertMenuItem, deleteMenuItem } from '../controllers/menu.controller.js';
+import { verificarToken } from '../middleware/auth.middleware.js';
 
 const router = express.Router();
 
-// 🛑 RUTA BASE AHORA ES '/' (que se traduce a /api/menu) 🛑
-router.route('/')
-    .get(getAllMenuItems)   // Ahora GET /api/menu
-    .post(createMenuItem); // Ahora POST /api/menu
+router.use(verificarToken); // 🔒 Protección SaaS
 
-// 🛑 RUTA ID AHORA ES '/:id' (que se traduce a /api/menu/:id) 🛑
-router.route('/:id')
-    .put(updateMenuItem)     
-    .delete(deleteMenuItem); 
+router.get('/', getMenuByBusiness);
+router.post('/', upsertMenuItem); // 👈 Ahora el POST a /api/menu servirá para todo
+router.delete('/:id', deleteMenuItem);
 
 export default router;

@@ -1,14 +1,19 @@
 {
   "name": "restaurante-whatsapp-bot",
   "version": "1.0.0",
-  "description": "Bot de WhatsApp para restaurantes - SaaS multi-tenant con IA",
+  "description": "Bot de WhatsApp para restaurantes pequeños - órdenes + stock simple",
   "main": "src/server.js",
   "type": "module",
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js"
   },
-  "keywords": ["whatsapp", "bot", "restaurante", "node"],
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "restaurante",
+    "node"
+  ],
   "author": "romancp85",
   "license": "MIT",
   "dependencies": {
@@ -25,7 +30,7 @@
     "mongoose": "^8.7.2",
     "mongoose-sequence": "^6.0.1",
     "openai": "^6.10.0",
-    "socket.io": "^4.8.1",
+    "socketio": "^1.0.0",
     "winston": "^3.18.3"
   },
   "devDependencies": {

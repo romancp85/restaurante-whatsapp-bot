@@ -1,69 +1,124 @@
 // src/controllers/menu.controller.js
-
-import MenuItem from '../models/MenuItem.js'; // ⬅️ Subir a src/, luego a models/
-import logger from '../utils/logger.js';     // ⬅️ Subir a src/, luego a utils/
+// Mantiene los nombres de exportación originales para no romper menu.routes.js:
+//   - getMenuByBusiness
+//   - upsertMenuItem
+//   - deleteMenuItem
+//
+// Mejoras sobre la versión original:
+//   - Invalida caché Redis al guardar/borrar
+//   - Soft-delete (desactiva en vez de borrar, preserva historial de pedidos)
+//   - Acepta precio en centavos (precioBase) o en pesos (precio)
+//   - Errores descriptivos
+import MenuItem from '../models/MenuItem.js';
+import { invalidateMenuCache } from '../services/menuService.js';
+import logger from '../utils/logger.js';
 
 /**
- * @desc Obtener todos los ítems del menú
- * @route GET /api/menu
+ * GET /api/menu
+ * Lista todos los productos del negocio autenticado.
+ * ?filter=TODOS incluye inactivos (para el panel de admin).
  */
-export const getAllMenuItems = async (req, res) => {
+export const getMenuByBusiness = async (req, res) => {
     try {
-        const items = await MenuItem.find({}); 
-        res.status(200).json(items);
+        const businessId = req.businessId;
+        const { filter } = req.query;
+
+        const query = { businessId };
+        if (filter !== 'TODOS') query.activo = true;
+
+        const items = await MenuItem.find(query).sort({ categoria: 1, nombre: 1 }).lean();
+        res.json(items);
     } catch (error) {
-        logger.error('Error al obtener el menú:', error);
-        res.status(500).json({ message: 'Error interno al obtener el menú.' });
+        logger.error('[Menu] Error al obtener menú:', error.message);
+        res.status(500).json({ message: 'Error al obtener el menú.' });
     }
 };
 
 /**
- * @desc Crear un nuevo ítem en el menú
- * @route POST /api/menu
+ * POST /api/menu
+ * Crea o actualiza un producto según si viene `id` en el body (patrón original).
  */
-export const createMenuItem = async (req, res) => {
+export const upsertMenuItem = async (req, res) => {
     try {
-        const newItem = new MenuItem(req.body);
-        await newItem.save();
-        res.status(201).json(newItem);
-    } catch (error) {
-        logger.error('Error al crear ítem:', error);
-        res.status(400).json({ message: 'Datos inválidos para crear el ítem.' });
-    }
-};
+        const businessId = req.businessId;
+        const {
+            id, nombre,
+            precioBase, precio,     // acepta ambos nombres
+            categoria, descripcion,
+            disponible, activo,
+            cantidad_diaria, alerta_en,
+            tipoProducto, modificadores, diasDisponibles,
+        } = req.body;
 
-/**
- * @desc Actualizar un ítem existente (por ID)
- * @route PUT /api/menu/:id
- */
-export const updateMenuItem = async (req, res) => {
-    const { id } = req.params;
-    try {
-        const updatedItem = await MenuItem.findByIdAndUpdate(id, req.body, { new: true, runValidators: true });
-        if (!updatedItem) {
-            return res.status(404).json({ message: 'Ítem no encontrado.' });
+        if (!nombre) {
+            return res.status(400).json({ message: 'El nombre del producto es requerido.' });
         }
-        res.status(200).json(updatedItem);
+
+        // Normaliza precio: acepta centavos (precioBase) o pesos con decimales (precio)
+        const precioFinal = precioBase
+            ? Math.round(parseFloat(precioBase))
+            : Math.round(parseFloat(precio || 0) * 100);
+
+        if (!precioFinal || precioFinal <= 0) {
+            return res.status(400).json({ message: 'El precio debe ser mayor a cero.' });
+        }
+
+        const data = {
+            businessId,
+            nombre: nombre.trim(),
+            precioBase: precioFinal,
+            categoria: (categoria || 'GENERAL').trim().toUpperCase(),
+            descripcion: (descripcion || '').trim(),
+            disponible: disponible !== undefined ? disponible : true,
+            activo: activo !== undefined ? activo : true,
+            cantidad_diaria: parseInt(cantidad_diaria) || 99,
+            alerta_en: parseInt(alerta_en) || 5,
+            tipoProducto: tipoProducto || 'simple',
+            modificadores: modificadores || [],
+            diasDisponibles: diasDisponibles || [0, 1, 2, 3, 4, 5, 6],
+        };
+
+        let resultado;
+        if (id) {
+            resultado = await MenuItem.findOneAndUpdate(
+                { _id: id, businessId },
+                data,
+                { new: true }
+            );
+            if (!resultado) return res.status(404).json({ message: 'Producto no encontrado.' });
+        } else {
+            resultado = new MenuItem(data);
+            await resultado.save();
+        }
+
+        await invalidateMenuCache(businessId);
+        res.status(id ? 200 : 201).json(resultado);
     } catch (error) {
-        logger.error(`Error al actualizar ítem ${id}:`, error);
-        res.status(400).json({ message: 'Error al actualizar el ítem.' });
+        logger.error('[Menu] Error en upsertMenuItem:', error.message);
+        res.status(400).json({ message: 'Error al guardar el producto.', detail: error.message });
     }
 };
 
 /**
- * @desc Eliminar un ítem del menú (por ID)
- * @route DELETE /api/menu/:id
+ * DELETE /api/menu/:id
+ * Soft-delete: marca activo=false para preservar historial de pedidos.
  */
 export const deleteMenuItem = async (req, res) => {
-    const { id } = req.params;
     try {
-        const deletedItem = await MenuItem.findByIdAndDelete(id);
-        if (!deletedItem) {
-            return res.status(404).json({ message: 'Ítem no encontrado.' });
-        }
-        res.status(200).json({ message: 'Ítem eliminado con éxito.' });
+        const businessId = req.businessId;
+        const { id } = req.params;
+
+        const item = await MenuItem.findOne({ _id: id, businessId });
+        if (!item) return res.status(404).json({ message: 'Producto no encontrado.' });
+
+        item.activo = false;
+        item.disponible = false;
+        await item.save();
+
+        await invalidateMenuCache(businessId);
+        res.json({ message: 'Producto desactivado correctamente.' });
     } catch (error) {
-        logger.error(`Error al eliminar ítem ${id}:`, error);
-        res.status(500).json({ message: 'Error al eliminar el ítem.' });
+        logger.error('[Menu] Error en deleteMenuItem:', error.message);
+        res.status(500).json({ message: 'Error al eliminar el producto.' });
     }
 };

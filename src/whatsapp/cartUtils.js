@@ -7,110 +7,136 @@ import logger from '../utils/logger.js';
  * 1. Obtener o crear el carrito (Multi-tenant)
  */
 export const getOrCreateCart = async (whatsappId, businessId) => {
-  let cart = await ShoppingCart.findOne({ whatsappId, businessId }); 
-
-  if (!cart) {
-    cart = new ShoppingCart({ 
-        whatsappId, 
-        businessId,
-        items: [],
-        totalCents: 0,
-        tempData: { history: [], menuMap: [] }
-    });
-    await cart.save();
-  }
-  return cart;
+    let cart = await ShoppingCart.findOne({ whatsappId, businessId });
+    if (!cart) {
+        cart = new ShoppingCart({
+            whatsappId,
+            businessId,
+            items: [],
+            totalCents: 0,
+            tempData: { history: [], menuMap: [] },
+        });
+        await cart.save();
+    }
+    return cart;
 };
 
 /**
- * 2. Añadir ítem con validación de Stock y Modificadores
+ * 2. Añadir ítem al carrito con validación de stock ATÓMICA.
+ *
+ * FIX RACE CONDITION: La versión anterior leía vendidas_hoy, calculaba
+ * disponibilidad y luego guardaba — dejando una ventana donde dos usuarios
+ * podían comprar el último ítem simultáneamente.
+ *
+ * La solución usa findOneAndUpdate con condición atómica en MongoDB:
+ *   - La condición filtra por stock disponible REAL en el momento del update
+ *   - Si la condición falla (stock insuficiente), devuelve null y reportamos SIN_STOCK
+ *   - No hay ventana de tiempo entre lectura y escritura
  */
 export const addItemToCart = async (whatsappId, businessId, itemDetails) => {
-  const { itemId, quantity, opcionesSeleccionadas, notas } = itemDetails;
+    const { itemId, quantity, opcionesSeleccionadas, notas } = itemDetails;
 
-  // Validación de seguridad: el producto debe pertenecer al negocio
-  const itemData = await MenuItem.findOne({ _id: itemId, businessId });
+    // Validación multi-tenant: el producto debe pertenecer a este negocio
+    const itemData = await MenuItem.findOne({ _id: itemId, businessId });
+    if (!itemData || !itemData.activo) {
+        logger.warn(`[CartUtils] Producto inválido o inactivo: ${itemId}`);
+        return { success: false, reason: 'PRODUCTO_NO_DISPONIBLE' };
+    }
 
-  if (!itemData || !itemData.activo) {
-    logger.warn(`[Seguridad] Producto inválido o inactivo: ${itemId}`);
-    return { success: false, reason: 'PRODUCTO_NO_DISPONIBLE' };
-  }
+    // Calculamos cuánto lleva ya el usuario de este producto en su carrito
+    const cart = await getOrCreateCart(whatsappId, businessId);
+    const cantidadEnCarrito = cart.items
+        .filter(i => i.itemId.toString() === itemId.toString())
+        .reduce((acc, curr) => acc + curr.cantidad, 0);
 
-  // --- 🛒 LÓGICA DE STOCK INTEGRADA ---
-  const cart = await getOrCreateCart(whatsappId, businessId);
-  
-  const stockDisponible = itemData.cantidad_diaria - itemData.vendidas_hoy;
-  // Calculamos cuánto lleva ya de este producto en el carrito
-  const cantidadEnCarrito = cart.items
-      .filter(i => i.itemId.toString() === itemId.toString())
-      .reduce((acc, curr) => acc + curr.cantidad, 0);
+    const stockDisponibleActual = itemData.cantidad_diaria - itemData.vendidas_hoy;
 
-  if (cantidadEnCarrito + quantity > stockDisponible) {
-      return { success: false, reason: 'SIN_STOCK', disponible: stockDisponible - cantidadEnCarrito, name: itemData.nombre };
-  }
-  // ------------------------------------
+    if (cantidadEnCarrito + quantity > stockDisponibleActual) {
+        return {
+            success: false,
+            reason: 'SIN_STOCK',
+            disponible: stockDisponibleActual - cantidadEnCarrito,
+            name: itemData.nombre,
+        };
+    }
 
-  // Cálculo de precio por unidad (Base + Modificadores)
-  let precioFinalUnidad = itemData.precioBase;
-  if (opcionesSeleccionadas && opcionesSeleccionadas.length > 0) {
-      precioFinalUnidad += opcionesSeleccionadas.reduce((total, opt) => total + (opt.precioExtra || 0), 0);
-  }
+    // FIX: Incremento atómico de vendidas_hoy con condición de stock.
+    // El operador $inc + condición en el filter hace la operación en un solo
+    // round-trip a MongoDB. Si otro proceso ya consumió el stock entre nuestra
+    // lectura y este update, la condición falla y devuelve null.
+    const maxVendidasPermitidas = itemData.cantidad_diaria - quantity;
+    const itemActualizado = await MenuItem.findOneAndUpdate(
+        {
+            _id: itemId,
+            businessId,
+            activo: true,
+            // Condición atómica: solo actualiza si el stock sigue siendo suficiente
+            vendidas_hoy: { $lte: maxVendidasPermitidas },
+        },
+        { $inc: { vendidas_hoy: quantity } },
+        { new: true }
+    );
 
-  // LÓGICA DE AGRUPACIÓN:
-  // Se agrupa solo si: Mismo ID + Mismas opciones + Mismas NOTAS
-  const itemIndex = cart.items.findIndex(i => 
-    i.itemId.toString() === itemId.toString() && 
-    JSON.stringify(i.opcionesSeleccionadas) === JSON.stringify(opcionesSeleccionadas) &&
-    (i.notas || "").trim() === (notas || "").trim()
-  );
+    if (!itemActualizado) {
+        // Alguien más compró el stock entre nuestra lectura y el update
+        logger.warn(`[CartUtils] Stock agotado en operación atómica para ${itemData.nombre}`);
+        return { success: false, reason: 'SIN_STOCK', disponible: 0, name: itemData.nombre };
+    }
 
-  if (itemIndex > -1) {
-    cart.items[itemIndex].cantidad += quantity;
-  } else {
-    cart.items.push({
-      itemId,
-      nombre: itemData.nombre,
-      precioUnitario: precioFinalUnidad,
-      cantidad: quantity,
-      opcionesSeleccionadas,
-      notas: notas || ""
-    });
-  }
+    // Precio final: base + modificadores
+    let precioFinalUnidad = itemData.precioBase;
+    if (opcionesSeleccionadas?.length > 0) {
+        precioFinalUnidad += opcionesSeleccionadas.reduce((t, opt) => t + (opt.precioExtra || 0), 0);
+    }
 
-  // Recalcular total del carrito
-  cart.totalCents = cart.items.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
+    // Agrupar si mismo producto + mismas opciones + mismas notas
+    const itemIndex = cart.items.findIndex(i =>
+        i.itemId.toString() === itemId.toString() &&
+        JSON.stringify(i.opcionesSeleccionadas) === JSON.stringify(opcionesSeleccionadas) &&
+        (i.notas || '').trim() === (notas || '').trim()
+    );
 
-  await cart.save();
-  return { success: true, name: itemData.nombre, totalPrice: precioFinalUnidad * quantity };
+    if (itemIndex > -1) {
+        cart.items[itemIndex].cantidad += quantity;
+    } else {
+        cart.items.push({
+            itemId,
+            nombre: itemData.nombre,
+            precioUnitario: precioFinalUnidad,
+            cantidad: quantity,
+            opcionesSeleccionadas: opcionesSeleccionadas || [],
+            notas: notas || '',
+        });
+    }
+
+    cart.totalCents = cart.items.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
+    await cart.save();
+
+    return { success: true, name: itemData.nombre, totalPrice: precioFinalUnidad * quantity };
 };
 
 /**
- * 3. Actualizar estado y metadatos
+ * 3. Actualizar estado y metadatos del carrito
  */
 export const updateCart = async (whatsappId, businessId, updates) => {
-  const cart = await getOrCreateCart(whatsappId, businessId);
-  
-  if (updates.conversationState) cart.conversationState = updates.conversationState;
-  
-  // Merge inteligente de tempData para no borrar lo que ya existe
-  if (updates.tempData) {
-      cart.tempData = { ...cart.tempData, ...updates.tempData };
-  }
-  
-  if (updates.items) {
-      cart.items = updates.items;
-      cart.totalCents = cart.items.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
-  }
+    const cart = await getOrCreateCart(whatsappId, businessId);
 
-  // Forzar a Mongoose a detectar cambios en el objeto mixto tempData
-  if (updates.tempData) cart.markModified('tempData');
+    if (updates.conversationState) cart.conversationState = updates.conversationState;
+    if (updates.tempData) {
+        cart.tempData = { ...cart.tempData, ...updates.tempData };
+        cart.markModified('tempData');
+    }
+    if (updates.items) {
+        cart.items = updates.items;
+        cart.totalCents = cart.items.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
+    }
 
-  await cart.save();
-  return cart;
+    await cart.save();
+    return cart;
 };
 
 /**
- * 4. Eliminar ítem por Índice
+ * 4. Eliminar ítem por índice
  */
 export const removeItemByIndex = async (whatsappId, businessId, index) => {
     const cart = await ShoppingCart.findOne({ whatsappId, businessId });
@@ -118,48 +144,31 @@ export const removeItemByIndex = async (whatsappId, businessId, index) => {
 
     const removedName = cart.items[index].nombre;
     cart.items.splice(index, 1);
-
-    if (cart.items.length === 0) {
-        cart.totalCents = 0;
-        cart.conversationState = 'INICIO';
-    } else {
-        cart.totalCents = cart.items.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
-    }
+    cart.totalCents = cart.items.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
+    if (cart.items.length === 0) cart.conversationState = 'INICIO';
 
     await cart.save();
     return { success: true, removedName, empty: cart.items.length === 0 };
 };
 
 /**
- * 🗑️ ELIMINACIÓN POR NOMBRE (Especial para Mateo IA)
+ * 5. Eliminar ítems por nombre (para Mateo IA — acción REMOVE)
  */
 export const removeItemsByName = async (whatsappId, businessId, productName) => {
     const cart = await ShoppingCart.findOne({ whatsappId, businessId });
     if (!cart || cart.items.length === 0) return null;
 
     const nombreBusqueda = productName.toLowerCase();
-    
-    // Filtramos: se quedan los productos que NO coincidan con lo que la IA quiere quitar
     const itemsFiltrados = cart.items.filter(item => {
         const itemNombre = item.nombre.toLowerCase();
-        // Comprobación de ida y vuelta para mayor precisión
         return !itemNombre.includes(nombreBusqueda) && !nombreBusqueda.includes(itemNombre);
     });
 
-    if (itemsFiltrados.length === cart.items.length) {
-        return cart; // No se borró nada, devolvemos el carrito igual
-    }
+    if (itemsFiltrados.length === cart.items.length) return cart;
 
     cart.items = itemsFiltrados;
-
-    // Si se vació, reseteamos a INICIO
-    if (cart.items.length === 0) {
-        cart.totalCents = 0;
-        cart.conversationState = 'INICIO';
-    } else {
-        // Recalculamos financiero
-        cart.totalCents = cart.items.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
-    }
+    cart.totalCents = cart.items.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
+    if (cart.items.length === 0) cart.conversationState = 'INICIO';
 
     await cart.save();
     return cart;

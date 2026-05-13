@@ -108,11 +108,33 @@
             </section>
 
             <!-- VISTA: CATÁLOGO (Próximamente) -->
-            <section id="view-catalogo" class="hidden">
-                <div class="bg-white p-12 rounded-3xl text-center border border-slate-100">
-                    <i class="fas fa-hammer text-4xl text-slate-200 mb-4"></i>
-                    <h3 class="text-xl font-black text-slate-800">Gestor de Menú</h3>
-                    <p class="text-slate-400">Pronto podrás gestionar tus productos y extras desde aquí.</p>
+            <section id="view-catalogo" class="hidden space-y-6">
+                <div class="flex justify-between items-center mb-6">
+                    <div>
+                        <h3 class="text-lg font-bold text-slate-800">Gestión de Menú</h3>
+                        <p class="text-xs text-slate-400 font-medium">Administra tus productos, precios y extras.</p>
+                    </div>
+                    <button onclick="openProductModal()" class="bg-indigo-600 text-white px-4 py-2 rounded-xl text-xs font-black shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all">
+                        + NUEVO PRODUCTO
+                    </button>
+                </div>
+
+                <!-- TABLA DE PRODUCTOS -->
+                <div class="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
+                    <table class="w-full text-left border-collapse">
+                        <thead class="bg-slate-50 border-b border-slate-100">
+                            <tr>
+                                <th class="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Producto</th>
+                                <th class="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Categoría</th>
+                                <th class="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Precio</th>
+                                <th class="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Estado</th>
+                                <th class="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="catalog-table-body" class="divide-y divide-slate-50">
+                            <!-- Se llena con JS -->
+                        </tbody>
+                    </table>
                 </div>
             </section>
 
@@ -202,6 +224,76 @@
     <!-- AUDIO -->
     <audio id="notif-sound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3"></audio>
 
+
+    <!-- MODAL DE PRODUCTO -->
+<div id="modal-product" class="hidden fixed inset-0 z-[70] flex items-center justify-center p-4">
+    <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onclick="closeProductModal()"></div>
+    <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl relative z-10 flex flex-col max-h-[90vh]">
+        <div class="p-8 overflow-y-auto">
+            <h3 id="product-modal-title" class="text-2xl font-black text-slate-800 mb-6">Nuevo Producto</h3>
+            <form id="product-form" class="space-y-4">
+            <input type="hidden" id="prod-id">
+            
+            <div>
+                <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Nombre del Producto</label>
+                <input type="text" id="prod-name-input" required class="w-full mt-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none">
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Precio ($)</label>
+                    <input type="number" id="prod-price-input" required class="w-full mt-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none">
+                </div>
+                <div>
+                    <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Categoría</label>
+                    <input type="text" id="prod-cat-input" placeholder="Ej: Pizzas" class="w-full mt-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none">
+                </div>
+            </div>
+
+            <!-- 🌟 ESTOS SON LOS CAMPOS QUE PROBABLEMENTE FALTAN 🌟 -->
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Stock Diario</label>
+                    <input type="number" id="prod-stock-input" required class="w-full mt-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none">
+                </div>
+                <div>
+                    <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Tipo</label>
+                    <select id="prod-type-input" class="w-full mt-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none font-bold">
+                        <option value="simple">Simple (Soda/Lado)</option>
+                        <option value="compuesto">Compuesto (Pizza/Burger)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div>
+                <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Descripción</label>
+                <textarea id="prod-desc-input" class="w-full mt-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none h-20"></textarea>
+            </div>
+            
+            <div class="flex items-center gap-3 p-4 bg-indigo-50 rounded-2xl">
+                <input type="checkbox" id="prod-avail-input" checked class="w-5 h-5 text-indigo-600 rounded">
+                <label for="prod-avail-input" class="text-sm font-bold text-indigo-700 uppercase tracking-tight">Disponible para venta</label>
+            </div>
+
+            <!-- Sección de Modificadores dentro del Modal -->
+            <div class="mt-6 border-t border-slate-100 pt-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h4 class="text-[10px] font-black text-indigo-500 uppercase tracking-widest">Configuración de Extras</h4>
+                    <button type="button" onclick="addModifierGroup()" class="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-1 rounded font-bold hover:bg-indigo-100">+ Añadir Grupo</button>
+                </div>
+                
+                <!-- Aquí se inyectarán los grupos de modificadores -->
+                <div id="modifiers-config-container" class="space-y-4">
+                    <p class="text-center text-slate-300 text-[10px] py-4 italic">No hay extras configurados para este producto.</p>
+                </div>
+            </div>
+
+            <button type="submit" class="w-full mt-6 bg-indigo-600 text-white font-black py-4 rounded-2xl hover:bg-indigo-700 transition-all uppercase tracking-widest text-xs shadow-lg">Guardar Producto</button>
+        </form>
+        </div>
+    </div>
+</div>
+
     <script>
     // 1. RECUPERAR DATOS
     const token = localStorage.getItem('token');
@@ -237,19 +329,14 @@
         }
     });
 
-    socket.on('NUEVO_PEDIDO', (pedido) => {
-        console.log("🎯 ¡PEDIDO RECIBIDO!", pedido);
+     socket.on('NUEVO_PEDIDO', (pedido) => {
+     console.log("🎯 [Socket] Nuevo pedido recibido:", pedido.numero_pedido);
         const sound = document.getElementById('notif-sound');
         if (sound) sound.play().catch(() => {});
-        fetchOrders(); // Refrescar lista
+        fetchOrders();
+        updateStats(); // Si tienes esta función disponible
     });
 
-    // ESCUCHA DE PEDIDOS
-    socket.on('NUEVO_PEDIDO', (pedido) => {
-        console.log("🎯 ¡PEDIDO RECIBIDO POR SOCKET!", pedido);
-        document.getElementById('notif-sound').play().catch(e => console.warn("Audio bloqueado"));
-        fetchOrders(); 
-    });
 
     // Llenar datos de usuario en la UI
     document.getElementById('user-name').innerText = user?.nombre || 'Admin';
@@ -258,16 +345,38 @@
 
 
     // === 3. NAVEGACIÓN ===
+    // === 3. NAVEGACIÓN ENTRE VISTAS ===
     function showView(viewId) {
-        document.querySelectorAll('section').forEach(s => s.classList.add('hidden'));
-        document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active-link'));
-        document.getElementById(`view-${viewId}`).classList.remove('hidden');
-        document.getElementById(`nav-${viewId}`).classList.add('active-link');
-        
-        const titles = { 'comandas': 'Comandas Live', 'catalogo': 'Gestor de Menú', 'ajustes': 'Configuración' };
-        document.getElementById('view-title').innerText = titles[viewId];
-        if (viewId === 'comandas') fetchOrders();
+    console.log("Cambiando a vista:", viewId); // Para saber que el botón funciona
+
+    // Ocultar todas las secciones
+    document.querySelectorAll('section').forEach(s => s.classList.add('hidden'));
+    // Quitar el color azul de todos los botones del menú lateral
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active-link'));
+    
+    // Mostrar la sección seleccionada
+    const targetSection = document.getElementById(`view-${viewId}`);
+    if (targetSection) targetSection.classList.remove('hidden');
+
+    // Poner en azul el botón del menú lateral seleccionado
+    const targetNav = document.getElementById(`nav-${viewId}`);
+    if (targetNav) targetNav.classList.add('active-link');
+    
+    // Actualizar el título de la parte superior
+    const titles = { 
+        'comandas': 'Comandas Live', 
+        'catalogo': 'Gestión de Catálogo', // 👈 Título actualizado
+        'ajustes': 'Configuración del Negocio' 
+    };
+    document.getElementById('view-title').innerText = titles[viewId] || 'Panel';
+
+    // 🌟 ESTA ES LA MAGIA: Cargar datos según la pestaña
+    if (viewId === 'comandas') {
+        fetchOrders(); // Refresca pedidos
+    } else if (viewId === 'catalogo') {
+        fetchCatalog(); // 👈 Llama a la función que descarga los productos
     }
+}
 
     // === 4. LÓGICA DE NEGOCIO ===
     let menuItems = [];
@@ -555,8 +664,227 @@ grid.innerHTML = pedidos.map(p => `
         document.getElementById('stat-sales').innerText = `$${total.toLocaleString('es-MX', { minimumFractionDigits: 2 })}`;
     }
 
+    // Lógica para cargar y renderizar el catálogo en la tabla
+    async function fetchCatalog() {
+        try {
+            const res = await fetch(`/api/menu`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            const items = await res.json();
+            renderCatalog(items);
+            
+            // Actualizamos también el select del modal de órdenes con los datos frescos
+            const select = document.getElementById('prod-select');
+            if (select) {
+                select.innerHTML = '<option value="">-- Selecciona --</option>' + 
+                    items.map(i => `<option value="${i._id}">${i.nombre} - $${(i.precioBase/100).toFixed(2)}</option>`).join('');
+            }
+        } catch (err) { console.error("Error catálogo", err); }
+    }
+
+    function renderCatalog(items) {
+        const tbody = document.getElementById('catalog-table-body');
+        if (!tbody) return;
+
+        tbody.innerHTML = items.map(i => `
+            <tr class="hover:bg-slate-50/50 transition-colors">
+                <td class="px-6 py-4">
+                    <p class="font-bold text-slate-800 text-sm">${i.nombre}</p>
+                    <p class="text-[10px] text-slate-400 truncate max-w-[200px]">${i.descripcion || 'Sin descripción'}</p>
+                </td>
+                <td class="px-6 py-4">
+                    <span class="px-2 py-1 bg-slate-100 text-slate-500 text-[9px] font-black rounded uppercase">${i.categoria}</span>
+                </td>
+                <td class="px-6 py-4 text-sm font-bold text-slate-700">
+                    $${(i.precioBase / 100).toFixed(2)}
+                </td>
+                <td class="px-6 py-4">
+                    <span class="flex items-center gap-1.5 ${i.disponible ? 'text-emerald-500' : 'text-red-400'} text-[10px] font-bold uppercase">
+                        <span class="w-1.5 h-1.5 rounded-full ${i.disponible ? 'bg-emerald-500' : 'bg-red-400'}"></span>
+                        ${i.disponible ? 'Activo' : 'Agotado'}
+                    </span>
+                </td>
+                <td class="px-6 py-4 text-right space-x-2">
+                    <button onclick="editProduct('${i._id}')" class="text-indigo-600 hover:text-indigo-900 transition-colors"><i class="fas fa-edit"></i></button>
+                    <button onclick="deleteProduct('${i._id}')" class="text-red-300 hover:text-red-600 transition-colors"><i class="fas fa-trash"></i></button>
+                </td>
+            </tr>
+        `).join('');
+    }
+
+    // Modales del Catálogo
+    function openProductModal(isEdit = false) {
+        document.getElementById('modal-product').classList.remove('hidden');
+        document.getElementById('product-modal-title').innerText = isEdit ? 'Editar Producto' : 'Nuevo Producto';
+    }
+
+    function closeProductModal() {
+        document.getElementById('modal-product').classList.add('hidden');
+        document.getElementById('product-form').reset();
+        document.getElementById('prod-id').value = "";
+    }
+
+    async function editProduct(id) {
+    try {
+        // Obtenemos los items directamente de la tabla o del API
+        const res = await fetch(`/api/menu`, { headers: { 'Authorization': `Bearer ${token}` } });
+        const items = await res.json();
+        const i = items.find(item => item._id === id);
+        
+        if (i) {
+            console.log("Editando producto:", i.nombre);
+            
+            // Llenar campos con seguridad
+            const setVal = (id, val) => {
+                const el = document.getElementById(id);
+                if (el) el.value = val;
+                else console.warn(`⚠️ No se encontró el campo con ID: ${id}`);
+            };
+
+            setVal('prod-id', i._id);
+            setVal('prod-name-input', i.nombre);
+            setVal('prod-price-input', i.precioBase / 100);
+            setVal('prod-cat-input', i.categoria);
+            setVal('prod-desc-input', i.descripcion || "");
+            setVal('prod-stock-input', i.cantidad_diaria || 99);
+            setVal('prod-type-input', i.tipoProducto || 'simple');
+            
+            const availCheck = document.getElementById('prod-avail-input');
+            if (availCheck) availCheck.checked = i.disponible;
+
+            // Al cargar los datos para editar
+            currentProductModifiers = i.modificadores || []; // Cargamos los modificadores de la DB
+            renderModifiersConfig(); // Dibujamos la interfaz de extras
+
+            openProductModal(true);
+        }
+    } catch (err) {
+        console.error("Error al cargar datos para editar:", err);
+    }
+}
+
+let currentProductModifiers = []; // Almacén temporal mientras editamos
+
+function addModifierGroup() {
+    const newGroup = {
+        nombre: "Nuevo Grupo (ej: Ingredientes)",
+        minimo: 0,
+        maximo: 1,
+        permiteExcedente: true,
+        opciones: [{ nombre: "Opción 1", precioAdicional: 0, disponible: true }]
+    };
+    currentProductModifiers.push(newGroup);
+    renderModifiersConfig();
+}
+
+function renderModifiersConfig() {
+    const container = document.getElementById('modifiers-config-container');
+    if (currentProductModifiers.length === 0) {
+        container.innerHTML = '<p class="text-center text-slate-300 text-[10px] py-4 italic">No hay extras configurados.</p>';
+        return;
+    }
+
+    container.innerHTML = currentProductModifiers.map((grupo, gIdx) => `
+        <div class="bg-slate-50 p-4 rounded-2xl border border-slate-100 relative">
+            <button type="button" onclick="removeGroup(${gIdx})" class="absolute top-2 right-2 text-slate-300 hover:text-red-500"><i class="fas fa-times"></i></button>
+            
+            <div class="grid grid-cols-2 gap-2 mb-3">
+                <input type="text" value="${grupo.nombre}" onchange="updateGroupName(${gIdx}, this.value)" placeholder="Nombre del grupo" class="col-span-2 px-3 py-2 text-xs font-bold bg-white border border-slate-200 rounded-lg outline-none">
+                <div class="flex items-center gap-1">
+                    <label class="text-[8px] font-black text-slate-400 uppercase">Min</label>
+                    <input type="number" value="${grupo.minimo}" onchange="updateGroupMin(${gIdx}, this.value)" class="w-full px-2 py-1 text-xs bg-white border border-slate-200 rounded">
+                </div>
+                <div class="flex items-center gap-1">
+                    <label class="text-[8px] font-black text-slate-400 uppercase">Max</label>
+                    <input type="number" value="${grupo.maximo}" onchange="updateGroupMax(${gIdx}, this.value)" class="w-full px-2 py-1 text-xs bg-white border border-slate-200 rounded">
+                </div>
+            </div>
+
+            <div class="space-y-2">
+                <p class="text-[8px] font-black text-slate-400 uppercase">Opciones (Nombre | +$)</p>
+                ${grupo.opciones.map((opt, oIdx) => `
+                    <div class="flex gap-2">
+                        <input type="text" value="${opt.nombre}" onchange="updateOptionName(${gIdx}, ${oIdx}, this.value)" class="flex-1 px-2 py-1 text-xs bg-white border border-slate-100 rounded">
+                        <input type="number" value="${opt.precioAdicional / 100}" onchange="updateOptionPrice(${gIdx}, ${oIdx}, this.value)" class="w-16 px-2 py-1 text-xs bg-white border border-slate-100 rounded">
+                        <button type="button" onclick="removeOption(${gIdx}, ${oIdx})" class="text-slate-300"><i class="fas fa-minus-circle"></i></button>
+                    </div>
+                `).join('')}
+                <button type="button" onclick="addOption(${gIdx})" class="text-[9px] font-bold text-indigo-500 hover:underline">+ Añadir opción</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+// Funciones de actualización de datos (Mutation)
+const updateGroupName = (g, v) => currentProductModifiers[g].nombre = v;
+const updateGroupMin = (g, v) => currentProductModifiers[g].minimo = parseInt(v);
+const updateGroupMax = (g, v) => currentProductModifiers[g].maximo = parseInt(v);
+const addOption = (g) => { currentProductModifiers[g].opciones.push({ nombre: "Nueva", precioAdicional: 0, disponible: true }); renderModifiersConfig(); };
+const removeOption = (g, o) => { currentProductModifiers[g].opciones.splice(o, 1); renderModifiersConfig(); };
+const removeGroup = (g) => { currentProductModifiers.splice(g, 1); renderModifiersConfig(); };
+const updateOptionName = (g, o, v) => currentProductModifiers[g].opciones[o].nombre = v;
+const updateOptionPrice = (g, o, v) => currentProductModifiers[g].opciones[o].precioAdicional = Math.round(parseFloat(v) * 100);
+
+        // Busca el submit del product-form y cámbialo por este:
+        document.getElementById('product-form').onsubmit = async (e) => {
+            e.preventDefault();
+            
+            const payload = {
+                id: document.getElementById('prod-id').value,
+                nombre: document.getElementById('prod-name-input').value,
+                precioBase: document.getElementById('prod-price-input').value, // El controlador lo pasará a centavos
+                categoria: document.getElementById('prod-cat-input').value,
+                descripcion: document.getElementById('prod-desc-input').value,
+                disponible: document.getElementById('prod-avail-input').checked,
+                cantidad_diaria: document.getElementById('prod-stock-input').value,
+                tipoProducto: document.getElementById('prod-type-input').value,
+                modificadores: currentProductModifiers 
+            };
+
+            // ✅ URL Corregida: Quitamos el /save
+            const res = await fetch('/api/menu', {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json', 
+                    'Authorization': `Bearer ${token}` 
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (res.ok) {
+                console.log("✅ Producto guardado");
+                closeProductModal();
+                fetchCatalog(); 
+            } else {
+                alert("Error al guardar el producto");
+            }
+        };
+
+// Y en la función editProduct(id), asegúrate de llenar los nuevos campos:
+function fillEditModal(i) {
+    document.getElementById('prod-id').value = i._id;
+    document.getElementById('prod-name-input').value = i.nombre;
+    document.getElementById('prod-price-input').value = i.precioBase / 100;
+    document.getElementById('prod-cat-input').value = i.categoria;
+    document.getElementById('prod-desc-input').value = i.descripcion || "";
+    document.getElementById('prod-avail-input').checked = i.disponible;
+    document.getElementById('prod-stock-input').value = i.cantidad_diaria || 99;
+    document.getElementById('prod-type-input').value = i.tipoProducto || 'simple';
+    openProductModal(true);
+}
+
+    async function deleteProduct(id) {
+        if (!confirm("¿Seguro que deseas eliminar este producto?")) return;
+        const res = await fetch(`/api/menu/${id}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) fetchCatalog();
+    }
+
     // INICIALIZACIÓN
     fetchOrders();
+    fetchCatalog();
     fetchMenu();
 </script>
 </body>

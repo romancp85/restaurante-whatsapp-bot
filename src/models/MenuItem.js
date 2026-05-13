@@ -54,6 +54,10 @@ const menuSchema = new mongoose.Schema({
     disponible: { type: Boolean, default: true },
     cantidad_diaria: { type: Number, default: 99 },
     vendidas_hoy: { type: Number, default: 0 },
+    
+    // 🌟 NUEVO CAMPO: Umbral para avisar al dueño que el producto se va a agotar
+    alerta_en: { type: Number, default: 5 }, 
+    
     activo: { type: Boolean, default: true }
 }, { timestamps: true });
 
