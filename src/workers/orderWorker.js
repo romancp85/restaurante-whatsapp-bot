@@ -10,6 +10,7 @@ import { getIntention } from '../services/aiService.js';
 import { applyInference } from '../services/businessRules.js';
 import { processCartActions } from '../services/cartService.js';
 import { notifyDashboard, sendWhatsAppNotification } from '../services/notifyService.js';
+import { handleInitialFlow } from '../services/flowService.js'; 
 
 // Capa de Utilidades
 import { getOrCreateCart, updateCart, removeItemsByName, addItemToCart } from '../whatsapp/cartUtils.js';
@@ -158,40 +159,54 @@ const orderWorker = new Worker('order-processing', async job => {
             }
 
             // --- 3. TEXTO / IA ---
+// --- 2. MANEJO DE TEXTO / IA ---
             else {
                 const text = (messageObject.text?.body || '').trim();
-                const normalizedText = text.toUpperCase();
                 const history = cart.tempData.history || [];
 
-                // Portero de Inicio
-                if (cart.items.length === 0 && history.length === 0 && text.length < 10) {
-                    const ultimo = await getUltimoPedido(userId, businessId);
-                    const propuesta = generarPropuestaVIP(ultimo);
-                    if (propuesta) {
-                        await updateCart(userId, businessId, { conversationState: 'PROPUESTA_VIP' });
-                        return await sendWhatsAppNotification(userId, { type: "interactive", interactive: { type: "button", body: { text: propuesta.texto }, action: { buttons: [{ type: "reply", reply: { id: "REPETIR_PEDIDO", title: "✅ Sí, lo mismo" } }, { type: "reply", reply: { id: "MENU", title: "📋 Ver Menú" } }] } } }, auth);
-                    }
-                    return await sendMenu(userId, businessId, auth, cart);
+                // 🌟 1. EL PORTERO (Servicio Flow)
+                // Este servicio maneja: Saludos, Propuesta VIP, Menú y Mensajes de cortesía ($0 IA).
+                const flujoManejado = await handleInitialFlow(userId, businessId, text, cart, auth);
+                
+                if (flujoManejado) {
+                    return; // Si el portero respondió, aquí termina nuestro trabajo.
                 }
 
-                // Captura FSM
+                // 🌟 2. CAPTURA DE DATOS FSM (Nombre / Dirección)
+                // Solo si el cliente ya está en medio de un proceso de checkout.
                 if (cart.conversationState === 'PREGUNTANDO_NOMBRE' || cart.conversationState === 'PREGUNTANDO_DIRECCION') {
                     const field = cart.conversationState === 'PREGUNTANDO_NOMBRE' ? 'name' : 'address';
-                    await updateCart(userId, businessId, { tempData: { ...cart.tempData, [field]: text }, conversationState: 'MOSTRANDO_MENU' });
+                    await updateCart(userId, businessId, { 
+                        tempData: { ...cart.tempData, [field]: text }, 
+                        conversationState: 'MOSTRANDO_MENU' 
+                    });
                     const updatedCart = await getOrCreateCart(userId, businessId);
                     return await ejecutarCheckoutInteligente(userId, businessId, updatedCart, auth, restaurante);
                 }
 
-                // Proceso IA
-                const context = { businessId, restauranteConfig, history, menuMap: cart.tempData.menuMap || [], lastProductDiscussed: cart.tempData.lastProductDiscussed };
+                // 🌟 3. PROCESAMIENTO CON IA (MATEO)
+                // Si llegamos aquí es porque no es un saludo y no estamos capturando datos fijos.
+                console.log("[Worker] Mensaje complejo. Consultando a Mateo IA...");
+                
+                const context = { 
+                    businessId, restauranteConfig, history, 
+                    menuMap: cart.tempData.menuMap || [], 
+                    lastProductDiscussed: cart.tempData.lastProductDiscussed 
+                };
+
+                // Llamada al servicio de IA
                 const aiResponse = await getIntention(text, context);
                 
+                // Aplicar reglas de inferencia (Dirección, pago, entrega)
                 const updatedData = applyInference(aiResponse.extractedData, cart.tempData);
                 await updateCart(userId, businessId, { tempData: updatedData });
 
+                // Ejecutar acciones en el carrito (Añadir/Quitar con validación de stock)
                 const { cart: finalCart, alerts } = await processCartActions(userId, businessId, aiResponse.items);
+                
                 let mensajeFinal = aiResponse.waiterMessage + (alerts ? `\n\n${alerts}` : "");
 
+                // Guardar memoria de la conversación
                 await updateCart(userId, businessId, {
                     tempData: {
                         ...updatedData,
@@ -200,10 +215,11 @@ const orderWorker = new Worker('order-processing', async job => {
                     }
                 });
 
+                // Responder con la confirmación de la IA y botones de acción
                 return await enviarBotonesContinuar(userId, mensajeFinal, auth);
             }
         }
-
+        
         // --- 4. FLUJO DIRECTO (DASHBOARD) ---
         if (source === 'DIRECTO') {
             const { items, tempData, businessId: bId } = job.data;
