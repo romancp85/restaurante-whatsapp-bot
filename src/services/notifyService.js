@@ -11,7 +11,6 @@ export const sendWhatsAppNotification = async (userId, payload, auth) => {
 };
 
 export const notifyDashboard = (businessId, pedido) => {
-    // 🌟 USAMOS global.io PARA ROMPER EL CÍRCULO VICIOSO
     if (!global.io) {
         console.error("⚠️ [notifyService] Socket.io no detectado en el espacio global.");
         return;
@@ -23,5 +22,33 @@ export const notifyDashboard = (businessId, pedido) => {
         console.log(`📢 [notifyService] Dashboard notificado en sala: ${salaId}`);
     } catch (error) {
         console.error(`❌ [notifyService] Error Socket:`, error.message);
+    }
+};
+
+/**
+ * 🌟 LÓGICA TOP-TIER: Notificación inteligente de cambio de estado
+ * Diferencia entre recoger en tienda y envío a domicilio.
+ */
+export const notifyOrderStatusUpdate = async (pedido, nuevoEstado, auth) => {
+    if (!pedido.telefonoCliente || pedido.telefonoCliente === 'MOSTRADOR') return;
+
+    let mensaje = "";
+    const n = pedido.numero_pedido;
+    const esPickup = pedido.entregaMode === 'PICKUP';
+
+    if (nuevoEstado === 'Confirmado') {
+        mensaje = `✅ *¡Hola ${pedido.nombreCliente}!* Tu pedido #${n} ha sido confirmado y ya entró a cocina. 👨‍🍳`;
+    } 
+    else if (nuevoEstado === 'En Camino') {
+        mensaje = esPickup 
+            ? `🛍️ *¡Tu pedido #${n} ya está listo!* Puedes pasar por él a nuestra sucursal. ¡Te esperamos!`
+            : `🛵 *¡Buenas noticias!* Tu pedido #${n} ya salió de cocina y va en camino a tu dirección.`;
+    } 
+    else if (nuevoEstado === 'Entregado') {
+        mensaje = `🌟 *¡Pedido entregado!* Muchas gracias por tu compra, ${pedido.nombreCliente}. ¡Que lo disfrutes!`;
+    }
+
+    if (mensaje) {
+        await sendWhatsAppNotification(pedido.telefonoCliente, mensaje, auth);
     }
 };

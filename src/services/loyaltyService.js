@@ -3,9 +3,12 @@ import Pedido from '../models/Pedido.js';
 
 export const getUltimoPedido = async (userId, businessId) => {
     try {
+        // Limpiamos el ID para buscar solo por los últimos 10 dígitos (más seguro en MX)
+        const phoneSuffix = userId.slice(-10); 
+        
         return await Pedido.findOne({ 
-            $or: [{ telefonoCliente: userId }, { clienteId: userId }], 
-            businessId 
+            businessId,
+            telefonoCliente: { $regex: phoneSuffix + '$' } // Busca que termine en esos 10 números
         })
         .sort({ createdAt: -1 })
         .lean();

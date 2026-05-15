@@ -44,7 +44,9 @@ const shoppingCartSchema = new mongoose.Schema({
             'ESPERANDO_AGENTE',
             'PREGUNTANDO_MODO_ENTREGA',
             'WAITING_FOR_REMOVAL',
-            'PROPUESTA_VIP'
+            'PROPUESTA_VIP',
+            'POST_VENTA',
+            'ESPERANDO_COMPROBANTE'
         ],
         default: 'INICIO'
     },

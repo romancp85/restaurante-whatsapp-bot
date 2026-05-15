@@ -1,10 +1,22 @@
 // src/services/aiService.js
 import { analizarPedidoConIA } from '../utils/aiUtils.js';
 
+/**
+ * Servicio de Inteligencia: Traduce texto humano a intenciones de negocio.
+ * Incluye traducción de índices y gestión de contexto post-venta.
+ */
 export const getIntention = async (text, context) => {
-    const { history, menuMap, businessId, restauranteConfig, lastProductDiscussed } = context;
+    const { 
+        history, 
+        menuMap, 
+        businessId, 
+        restauranteConfig, 
+        lastProductDiscussed, 
+        lastOrder, // 👈 Nuevo: Referencia al último pedido
+        cartState  // 👈 Nuevo: Estado actual de la conversación
+    } = context;
 
-    // 1. Traductor de Índices (Lógica técnica separada del Worker)
+    // 1. TRADUCTOR DE ÍNDICES (Lógica técnica agnóstica)
     let processedText = text;
     if (menuMap?.length > 0) {
         const sortedMap = [...menuMap].sort((a, b) => b.index - a.index);
@@ -20,12 +32,28 @@ export const getIntention = async (text, context) => {
 
     console.log(`[aiService] Texto Original: "${text}" | Traducido: "${processedText}"`);
 
-    // 2. Llamada al Motor de IA (Mateo)
+    // 2. 🌟 INYECCIÓN DE CONTEXTO POST-VENTA (Luxury Continuity)
+    // Si el usuario está en fase de seguimiento, le damos instrucciones extra a Mateo
+    let promptModificado = restauranteConfig;
+    
+    if (cartState === 'POST_VENTA' || cartState === 'ESPERANDO_COMPROBANTE') {
+        const infoExtra = `
+        \n⚠️ [REGLA CRÍTICA DE CONTINUIDAD]:
+        - El pedido #${lastOrder?.numero_pedido || ''} ya fue entregado/cerrado.
+        - El carrito actual está COMPLETAMENTE VACÍO.
+        - NO asumas que el usuario quiere repetir productos del historial.
+        - Si el usuario envía comentarios, agradecimientos o quejas, NO agregues nada al carrito.
+        - SOLO agrega productos si el usuario los pide EXPLÍCITAMENTE por su nombre en este mensaje actual.
+        `;
+        promptModificado += infoExtra;
+    }
+
+    // 3. LLAMADA AL MOTOR DE IA (MATEO)
     const aiResponse = await analizarPedidoConIA(
         processedText, 
         businessId, 
         history, 
-        restauranteConfig, 
+        promptModificado, // 👈 Enviamos el prompt con el "secreto" de la venta reciente
         lastProductDiscussed, 
         menuMap
     );

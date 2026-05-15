@@ -1,0 +1,28 @@
+{
+  "output": {
+    "filePath": "repomix-output.xml",
+    "style": "xml"
+  },
+  "include": [
+    "src/**/*.js",
+    "package.json"
+  ],
+  "ignore": {
+    "patterns": [
+      "node_modules/**",
+      "src/frontend/**",
+      "dist/**",
+      "tmp/**",
+      "*.log",
+      "seedSaaS.js",
+      ".env*",
+      "**/aiServiceOld.js",
+      "public/admin/test.html"
+    ],
+    "useGitignore": true,
+    "useDefaultIgnore": true
+  },
+  "security": {
+    "enableSecretDetection": true
+  }
+}

@@ -4,6 +4,7 @@ import Restaurante from '../models/Restaurante.js';
 import { sendMessage } from '../whatsapp/utils.js';
 import { decrypt } from '../utils/cryptoUtils.js';
 import { enqueueOrder } from '../queues/orderQueue.js'; // 👈 ESTA ERA LA IMPORTACIÓN QUE FALTABA
+import { notifyOrderStatusUpdate } from '../services/notifyService.js';         
 import logger from '../utils/logger.js';
 
 /**
@@ -14,7 +15,7 @@ export const getActiveOrders = async (req, res) => {
         // 🛡️ REGLA SaaS: El businessId viene del middleware verificarToken
         const businessId = req.businessId; 
 
-        const activeStatuses = ['Pendiente', 'Confirmado', 'En Preparación', 'En Camino'];
+        const activeStatuses = ['Pendiente', 'Pendiente de Pago', 'Confirmado', 'En Preparación', 'En Camino'];
         
         const pedidos = await Pedido.find({ 
             businessId: businessId, // Solo traemos los pedidos DE ESTE restaurante
@@ -39,31 +40,29 @@ export const updateOrderStatus = async (req, res) => {
     try {
         const pedido = await Pedido.findById(id);
 
-        // 🛡️ REGLA SaaS: Comparar IDs como String para evitar fallos de Objeto vs Texto
         if (!pedido || pedido.businessId.toString() !== req.businessId.toString()) {
             return res.status(404).json({ message: 'Pedido no autorizado.' });
         }
 
+        // 1. Actualizar en Base de Datos
         pedido.estado = nuevoEstado;
         await pedido.save();
 
-        // 🚀 NOTIFICACIÓN
-        const restaurante = await Restaurante.findById(pedido.businessId);
-        const tokenReal = decrypt(restaurante.whatsappToken);
-        const auth = { token: tokenReal, phoneId: restaurante.whatsappPhoneId };
+        // 2. Obtener credenciales del restaurante para notificar
+        const restaurante = await Restaurante.findById(pedido.businessId).lean();
+        const auth = { 
+            token: decrypt(restaurante.whatsappToken), 
+            phoneId: restaurante.whatsappPhoneId 
+        };
 
-        let msg = "";
-        if (nuevoEstado === 'Confirmado') msg = `✅ *¡Hola ${pedido.nombreCliente}!* Tu pedido #${pedido.numero_pedido} fue confirmado.`;
-        if (nuevoEstado === 'En Camino') msg = `🛵 *¡Tu pedido #${pedido.numero_pedido} va en camino!*`;
-        if (nuevoEstado === 'Entregado') msg = `🌟 *¡Gracias por tu compra!* Que disfrutes tu comida.`;
+        // 3. 🚀 DELEGAR NOTIFICACIÓN (La única fuente de verdad)
+        // Ya no escribimos mensajes aquí, el servicio sabe qué decir.
+        await notifyOrderStatusUpdate(pedido, nuevoEstado, auth);
 
-        if (msg && pedido.telefonoCliente !== 'MOSTRADOR') {
-            await sendMessage(pedido.telefonoCliente, msg, auth);
-        }
-
-        res.status(200).json({ message: "Estado actualizado", pedido });
+        res.status(200).json({ message: "Estado actualizado y cliente notificado", pedido });
     } catch (error) {
-        res.status(400).json({ message: 'Error' });
+        logger.error('Error al actualizar pedido:', error);
+        res.status(400).json({ message: 'Error al procesar el cambio.' });
     }
 };
 

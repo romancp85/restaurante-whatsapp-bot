@@ -3,15 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Panel Administrativo | SaaS Comandeo</title>
+    <title>Mateo SaaS | Panel Pro</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="/socket.io/socket.io.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; }
-        .active-link { bg-indigo-50; border-right: 4px solid #4f46e5; color: #4f46e5; }
+        .active-link { background-color: #f8fafc; border-right: 4px solid #4f46e5; color: #4f46e5; }
+        /* Colores de Estado Enterprise */
         .status-pendiente { border-top: 4px solid #f97316; }
+        .status-pendientedepago { border-top: 4px solid #eab308; background-color: #fffbeb; }
         .status-confirmado { border-top: 4px solid #3b82f6; }
         .status-preparacion { border-top: 4px solid #8b5cf6; }
         .status-camino { border-top: 4px solid #10b981; }
@@ -22,68 +24,61 @@
 
     <!-- SIDEBAR -->
     <aside class="w-64 bg-white border-r border-slate-200 flex flex-col z-50">
-        <div class="p-6">
-            <div class="flex items-center gap-3 text-indigo-600">
-                <i class="fas fa-rocket text-2xl"></i>
-                <span class="font-black text-xl tracking-tighter text-slate-800">Mateo SaaS</span>
-            </div>
+        <div class="p-6 flex items-center gap-3 text-indigo-600">
+            <i class="fas fa-rocket text-2xl"></i>
+            <span class="font-black text-xl tracking-tighter text-slate-800 uppercase">Mateo</span>
         </div>
-
         <nav class="flex-1 mt-4">
-            <a href="#" onclick="showView('comandas')" id="nav-comandas" class="nav-item flex items-center gap-3 px-6 py-4 text-slate-500 font-semibold hover:bg-slate-50 transition-all border-r-4 border-transparent active-link">
+            <button data-view="comandas" class="nav-item w-full flex items-center gap-3 px-6 py-4 text-slate-500 font-semibold hover:bg-slate-50 transition-all active-link">
                 <i class="fas fa-th-large w-5"></i> Comandas Live
-            </a>
-            <a href="#" onclick="showView('catalogo')" id="nav-catalogo" class="nav-item flex items-center gap-3 px-6 py-4 text-slate-500 font-semibold hover:bg-slate-50 transition-all border-r-4 border-transparent">
+            </button>
+            <button data-view="catalogo" class="nav-item w-full flex items-center gap-3 px-6 py-4 text-slate-500 font-semibold hover:bg-slate-50 transition-all">
                 <i class="fas fa-utensils w-5"></i> Catálogo / Menú
-            </a>
-            <a href="#" onclick="showView('ajustes')" id="nav-ajustes" class="nav-item flex items-center gap-3 px-6 py-4 text-slate-500 font-semibold hover:bg-slate-50 transition-all border-r-4 border-transparent">
+            </button>
+            <!-- Futuro: Ajustes -->
+            <button data-view="ajustes" class="nav-item w-full flex items-center gap-3 px-6 py-4 text-slate-500 font-semibold hover:bg-slate-50 transition-all opacity-50 cursor-not-allowed">
                 <i class="fas fa-cog w-5"></i> Configuración
-            </a>
+            </button>
         </nav>
-
-        <!-- USER INFO & LOGOUT -->
-        <div class="p-4 border-t border-slate-100 bg-slate-50/50">
+        
+        <!-- USUARIO Y LOGOUT -->
+        <div class="p-4 border-t bg-slate-50/50">
             <div class="flex items-center gap-3 mb-4">
-                <div class="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold">
-                    <span id="user-initial">U</span>
-                </div>
+                <div class="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold" id="user-initial">U</div>
                 <div class="flex-1 min-w-0">
-                    <p id="user-name" class="text-sm font-bold text-slate-800 truncate">Usuario</p>
-                    <p id="user-role" class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Admin</p>
+                    <p class="text-sm font-bold text-slate-800 truncate" id="user-name">Cargando...</p>
+                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest" id="store-name">...</p>
                 </div>
             </div>
-            <button onclick="logout()" class="w-full flex items-center justify-center gap-2 py-2 px-4 bg-white border border-red-100 text-red-500 text-xs font-bold rounded-lg hover:bg-red-50 transition-all">
+            <button id="btn-logout" class="w-full flex items-center justify-center gap-2 py-2 text-red-500 text-xs font-bold rounded-lg hover:bg-red-50 transition-all">
                 <i class="fas fa-sign-out-alt"></i> Cerrar Sesión
             </button>
         </div>
     </aside>
 
-    <!-- MAIN CONTENT -->
+    <!-- CONTENIDO PRINCIPAL -->
     <main class="flex-1 flex flex-col h-screen overflow-hidden">
         
-        <!-- TOP HEADER -->
+        <!-- CABECERA SUPERIOR -->
         <header class="bg-white border-b border-slate-200 py-4 px-8 flex justify-between items-center h-20">
-            <div>
-                <h2 id="view-title" class="text-xl font-black text-slate-800 uppercase tracking-tight">Comandas Live</h2>
-                <p id="store-name" class="text-xs text-indigo-500 font-bold uppercase tracking-widest">Cargando...</p>
-            </div>
+            <h2 id="view-title" class="text-xl font-black text-slate-800 uppercase tracking-tight">Comandas Live</h2>
             <div class="flex items-center gap-4">
-                <div id="socket-status" class="flex items-center gap-2 bg-green-50 text-green-600 px-3 py-1 rounded-full text-[10px] font-black border border-green-200">
-                    <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span> SYSTEM LIVE
+                <div id="socket-status" class="flex items-center gap-2 bg-slate-100 text-slate-400 px-3 py-1 rounded-full text-[10px] font-black border border-slate-200">
+                    <span class="w-2 h-2 bg-slate-300 rounded-full"></span> BUSCANDO SEÑAL
                 </div>
-                <button onclick="openModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl text-xs font-black transition-all shadow-lg shadow-indigo-100 flex items-center gap-2">
+                <button onclick="window.openModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl text-xs font-black transition-all shadow-lg shadow-indigo-100 flex items-center gap-2">
                     <i class="fas fa-plus"></i> NUEVA ORDEN
                 </button>
             </div>
         </header>
 
-        <!-- SCROLLABLE CONTENT AREA -->
+        <!-- ÁREA DE VISTAS (Scrollable) -->
         <div id="content-area" class="flex-1 overflow-y-auto p-8">
             
-            <!-- VISTA: COMANDAS (Por defecto) -->
+            <!-- VISTA 1: COMANDAS -->
             <section id="view-comandas" class="space-y-6">
-                <!-- Stats en vista de comandas -->
-                <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+                <!-- Estadísticas superiores -->
+                <div id="stats-container" class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8 text-center">
                     <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
                         <p class="text-slate-400 text-[10px] font-black uppercase">Pendientes</p>
                         <h2 id="stat-pending" class="text-2xl font-black text-orange-500">0</h2>
@@ -93,7 +88,7 @@
                         <h2 id="stat-kitchen" class="text-2xl font-black text-indigo-500">0</h2>
                     </div>
                     <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-                        <p class="text-slate-400 text-[10px] font-black uppercase">Camino</p>
+                        <p class="text-slate-400 text-[10px] font-black uppercase">En Camino</p>
                         <h2 id="stat-delivery" class="text-2xl font-black text-emerald-500">0</h2>
                     </div>
                     <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
@@ -103,23 +98,22 @@
                 </div>
 
                 <div id="orders-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                    <!-- Cards de órdenes inyectadas por JS -->
+                    <!-- Cards se inyectan desde orders.js -->
                 </div>
             </section>
 
-            <!-- VISTA: CATÁLOGO (Próximamente) -->
+            <!-- VISTA 2: CATÁLOGO -->
             <section id="view-catalogo" class="hidden space-y-6">
                 <div class="flex justify-between items-center mb-6">
                     <div>
-                        <h3 class="text-lg font-bold text-slate-800">Gestión de Menú</h3>
-                        <p class="text-xs text-slate-400 font-medium">Administra tus productos, precios y extras.</p>
+                        <h3 class="text-lg font-bold text-slate-800">Gestión de Catálogo</h3>
+                        <p class="text-xs text-slate-400 font-medium">Administra productos, precios y stock.</p>
                     </div>
-                    <button onclick="openProductModal()" class="bg-indigo-600 text-white px-4 py-2 rounded-xl text-xs font-black shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all">
+                    <button onclick="window.openProductModal()" class="bg-indigo-600 text-white px-4 py-2 rounded-xl text-xs font-black shadow-lg hover:bg-indigo-700 transition-all">
                         + NUEVO PRODUCTO
                     </button>
                 </div>
 
-                <!-- TABLA DE PRODUCTOS -->
                 <div class="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
                     <table class="w-full text-left border-collapse">
                         <thead class="bg-slate-50 border-b border-slate-100">
@@ -132,760 +126,134 @@
                             </tr>
                         </thead>
                         <tbody id="catalog-table-body" class="divide-y divide-slate-50">
-                            <!-- Se llena con JS -->
+                            <!-- Se inyecta desde catalog.js -->
                         </tbody>
                     </table>
                 </div>
             </section>
 
-            <!-- VISTA: AJUSTES (Próximamente) -->
+            <!-- VISTA 3: AJUSTES -->
             <section id="view-ajustes" class="hidden">
                 <div class="bg-white p-12 rounded-3xl text-center border border-slate-100">
-                    <i class="fas fa-sliders-h text-4xl text-slate-200 mb-4"></i>
-                    <h3 class="text-xl font-black text-slate-800">Ajustes del Negocio</h3>
-                    <p class="text-slate-400">Horarios, métodos de pago y links de WhatsApp.</p>
+                    <i class="fas fa-hammer text-4xl text-slate-200 mb-4"></i>
+                    <h3 class="text-xl font-black text-slate-800">Panel de Configuración</h3>
+                    <p class="text-slate-400">Pronto podrás editar horarios y datos bancarios.</p>
                 </div>
             </section>
-
         </div>
     </main>
 
-    <!-- MODAL NUEVA ORDEN DIRECTA (Igual al anterior) -->
-<!-- MODAL NUEVA ORDEN DIRECTA (VERSION POS OMNICANAL) -->
-<div id="modal-order" class="hidden fixed inset-0 z-[60] flex items-center justify-center p-4">
-    <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onclick="closeModal()"></div>
-    <div class="bg-white w-full max-w-2xl rounded-3xl shadow-2xl relative z-10 flex flex-col max-h-[90vh]">
-        
-        <div class="p-6 border-b border-slate-100 flex justify-between items-center">
-            <h3 class="text-xl font-black text-slate-800">Nueva Orden Profesional</h3>
-            <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600"><i class="fas fa-times"></i></button>
-        </div>
+    <!-- ==========================================
+         MODALES (SISTEMA POS Y CRUD)
+    =========================================== -->
 
-        <div class="flex-1 overflow-y-auto p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
-            <!-- COLUMNA IZQUIERDA: CAPTURA -->
-            <div class="space-y-6">
-                <div>
-                    <h4 class="text-[10px] font-black text-indigo-500 uppercase mb-3">1. Datos del Cliente</h4>
-                    <input type="text" id="cust-name" placeholder="Nombre del cliente" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl mb-2 text-sm">
-                    <input type="text" id="cust-phone" placeholder="Teléfono (opcional)" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm">
-                </div>
-
-                <div>
-                    <h4 class="text-[10px] font-black text-indigo-500 uppercase mb-3">2. Agregar Producto</h4>
-                    <select id="prod-select" onchange="renderModifiers()" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm mb-3 font-bold">
-                        <option value="">Selecciona un producto...</option>
-                    </select>
-                    
-                    <!-- Contenedor de Modificadores (Dinámico) -->
-                    <div id="modifiers-container" class="space-y-2 mb-3 max-h-40 overflow-y-auto px-2"></div>
-
-                    <button onclick="addItemToTempOrder()" class="w-full py-2 bg-slate-800 text-white text-[10px] font-black rounded-lg uppercase tracking-widest hover:bg-slate-700 transition-all">
-                        + Añadir al pedido
-                    </button>
-                </div>
-
-                <div>
-                    <h4 class="text-[10px] font-black text-indigo-500 uppercase mb-3">3. Logística y Pago</h4>
-                    <div class="flex gap-2 mb-3">
-                        <button onclick="setDeliveryMode('PICKUP')" id="btn-pickup" class="flex-1 py-2 rounded-lg text-[10px] font-black border-2 border-indigo-600 bg-indigo-50 text-indigo-600">RECOGER</button>
-                        <button onclick="setDeliveryMode('DELIVERY')" id="btn-delivery" class="flex-1 py-2 rounded-lg text-[10px] font-black border-2 border-transparent bg-slate-100 text-slate-500">DOMICILIO</button>
-                    </div>
-                    <textarea id="cust-address" placeholder="Dirección completa..." class="hidden w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm mb-2 h-20"></textarea>
-                    <select id="pay-method" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold">
-                        <option value="Efectivo">Efectivo</option>
-                        <option value="Tarjeta">Tarjeta</option>
-                        <option value="Transferencia">Transferencia</option>
-                    </select>
-                </div>
+    <!-- MODAL 1: NUEVA ORDEN (POS) -->
+    <div id="modal-order" class="hidden fixed inset-0 z-[60] flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onclick="window.closeModal()"></div>
+        <div class="bg-white w-full max-w-2xl rounded-3xl shadow-2xl relative z-10 flex flex-col max-h-[90vh]">
+            <div class="p-6 border-b border-slate-100 flex justify-between items-center">
+                <h3 class="text-xl font-black text-slate-800">Nueva Orden Directa</h3>
+                <button onclick="window.closeModal()" class="text-slate-400 hover:text-slate-600"><i class="fas fa-times"></i></button>
             </div>
-
-            <!-- COLUMNA DERECHA: RESUMEN (CARRITO) -->
-            <div class="bg-slate-50 rounded-2xl p-4 flex flex-col border border-slate-100">
-                <h4 class="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest text-center">Resumen de Orden</h4>
-                <div id="temp-items-list" class="flex-1 space-y-3 overflow-y-auto">
-                    <p class="text-center text-slate-400 text-xs py-10 italic">No hay productos aún</p>
-                </div>
-                <div class="mt-4 pt-4 border-t border-slate-200">
-                    <div class="flex justify-between items-center mb-4">
-                        <span class="font-black text-slate-800 uppercase text-xs">Total:</span>
-                        <span id="temp-total" class="text-xl font-black text-indigo-600">$0.00</span>
+            <div class="flex-1 overflow-y-auto p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div class="space-y-6">
+                    <div>
+                        <h4 class="text-[10px] font-black text-indigo-500 uppercase mb-3">1. Datos Cliente</h4>
+                        <input type="text" id="cust-name" placeholder="Nombre" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl mb-2 text-sm">
+                        <input type="text" id="cust-phone" placeholder="Teléfono" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm">
                     </div>
-                <!-- Busca este botón al final del modal -->
-                    <button onclick="submitFinalOrder()" id="btn-submit-order" 
-                        class="w-full bg-indigo-600 text-white font-black py-4 rounded-2xl hover:bg-indigo-700 transition-all uppercase text-xs shadow-lg">
-                        Crear Pedido Final
-                    </button>    
+                    <div>
+                        <h4 class="text-[10px] font-black text-indigo-500 uppercase mb-3">2. Agregar Item</h4>
+                        <select id="prod-select" onchange="window.renderModifiers()" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold mb-3"></select>
+                        <div id="modifiers-container" class="space-y-2 mb-3 max-h-40 overflow-y-auto px-2"></div>
+                        <button onclick="window.addItemToTempOrder()" class="w-full py-2 bg-slate-800 text-white text-[10px] font-black rounded-lg uppercase">Añadir al pedido</button>
+                    </div>
+                    <div class="mt-3">
+                        <label class="text-[9px] font-black text-slate-400 uppercase">Notas del Producto</label>
+                        <input type="text" id="item-notes" placeholder="Ej: Término medio, sin sal..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs outline-none focus:border-indigo-500">
+                    </div>
+                    <div>
+                        <h4 class="text-[10px] font-black text-indigo-500 uppercase mb-3">3. Logística</h4>
+                        <div class="flex gap-2 mb-3">
+                            <button onclick="window.setDeliveryMode('PICKUP')" id="btn-pickup" class="flex-1 py-2 rounded-lg text-[10px] font-black border-2 border-indigo-600 bg-indigo-50 text-indigo-600 uppercase">Tienda</button>
+                            <button onclick="window.setDeliveryMode('DELIVERY')" id="btn-delivery" class="flex-1 py-2 rounded-lg text-[10px] font-black border-2 border-transparent bg-slate-100 text-slate-500 uppercase">Domicilio</button>
+                        </div>
+
+                        <!-- 🌟 NUEVO SELECTOR DE PAGO -->
+                        <select id="pay-method" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold mb-2">
+                            <option value="Efectivo">💵 Efectivo</option>
+                            <option value="Tarjeta">💳 Tarjeta</option>
+                            <option value="Transferencia">🏦 Transferencia</option>
+                        </select>
+
+                        <textarea id="cust-address" placeholder="Dirección..." class="hidden w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm h-16"></textarea>
+                    </div>
+                </div>
+                <div class="bg-slate-50 rounded-2xl p-4 flex flex-col border border-slate-100">
+                    <h4 class="text-[10px] font-black text-slate-400 uppercase mb-4 text-center">Resumen</h4>
+                    <div id="temp-items-list" class="flex-1 space-y-3 overflow-y-auto"></div>
+                    <div class="flex justify-between items-center text-slate-400 text-[10px] mb-1 uppercase font-bold">
+                        <span>Subtotal:</span>
+                        <span id="temp-subtotal">$0.00</span>
+                    </div>
+                    <div id="delivery-cost-row" class="hidden flex justify-between items-center text-orange-500 text-[10px] mb-2 uppercase font-bold">
+                        <span>Costo de Envío:</span>
+                        <span id="temp-delivery-fee">$0.00</span>
+                    </div>
+                    <div class="mt-4 pt-4 border-t border-slate-200">
+                        <div class="flex justify-between items-center mb-4 font-black">
+                            <span class="text-xs">TOTAL:</span>
+                            <span id="temp-total" class="text-xl text-indigo-600">$0.00</span>
+                        </div>
+                        <button onclick="window.submitFinalOrder()" id="btn-submit-order" class="w-full bg-indigo-600 text-white font-black py-4 rounded-2xl shadow-lg uppercase text-xs">Crear Venta</button>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
-</div>
 
-    <!-- AUDIO -->
+    <!-- MODAL 2: GESTIÓN DE PRODUCTO (CRUD) -->
+    <div id="modal-product" class="hidden fixed inset-0 z-[70] flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onclick="window.closeProductModal()"></div>
+        <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl relative z-10 flex flex-col max-h-[90vh]">
+            <div class="p-8 overflow-y-auto">
+                <h3 id="product-modal-title" class="text-2xl font-black text-slate-800 mb-6">Nuevo Producto</h3>
+                <form id="product-form" class="space-y-4">
+                    <input type="hidden" id="prod-id">
+                    <input type="text" id="prod-name-input" required placeholder="Nombre" class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none">
+                    <div class="grid grid-cols-2 gap-4">
+                        <input type="number" id="prod-price-input" required placeholder="Precio ($)" class="px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none">
+                        <input type="text" id="prod-cat-input" placeholder="Categoría" class="px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none">
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <input type="number" id="prod-stock-input" placeholder="Stock Diario" class="px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none">
+                        <select id="prod-type-input" class="px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none font-bold">
+                            <option value="simple">Simple</option>
+                            <option value="compuesto">Compuesto</option>
+                        </select>
+                    </div>
+                    <textarea id="prod-desc-input" placeholder="Descripción" class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl h-16 outline-none"></textarea>
+                    <div class="flex items-center gap-3 p-4 bg-indigo-50 rounded-2xl">
+                        <input type="checkbox" id="prod-avail-input" checked class="w-5 h-5 text-indigo-600">
+                        <label class="text-sm font-bold text-indigo-700 uppercase">Disponible para venta</label>
+                    </div>
+                    <div class="mt-6 border-t pt-4">
+                        <div class="flex justify-between items-center mb-4">
+                            <h4 class="text-[10px] font-black text-indigo-500 uppercase">Extras / Modificadores</h4>
+                            <button type="button" onclick="window.addModifierGroup()" class="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-1 rounded font-bold">+ Grupo</button>
+                        </div>
+                        <div id="modifiers-config-container" class="space-y-4"></div>
+                    </div>
+                    <button type="submit" class="w-full mt-6 bg-indigo-600 text-white font-black py-4 rounded-2xl shadow-lg uppercase text-xs">Guardar Cambios</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- AUDIO NOTIFICACIÓN -->
     <audio id="notif-sound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3"></audio>
 
-
-    <!-- MODAL DE PRODUCTO -->
-<div id="modal-product" class="hidden fixed inset-0 z-[70] flex items-center justify-center p-4">
-    <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onclick="closeProductModal()"></div>
-    <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl relative z-10 flex flex-col max-h-[90vh]">
-        <div class="p-8 overflow-y-auto">
-            <h3 id="product-modal-title" class="text-2xl font-black text-slate-800 mb-6">Nuevo Producto</h3>
-            <form id="product-form" class="space-y-4">
-            <input type="hidden" id="prod-id">
-            
-            <div>
-                <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Nombre del Producto</label>
-                <input type="text" id="prod-name-input" required class="w-full mt-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none">
-            </div>
-
-            <div class="grid grid-cols-2 gap-4">
-                <div>
-                    <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Precio ($)</label>
-                    <input type="number" id="prod-price-input" required class="w-full mt-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none">
-                </div>
-                <div>
-                    <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Categoría</label>
-                    <input type="text" id="prod-cat-input" placeholder="Ej: Pizzas" class="w-full mt-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none">
-                </div>
-            </div>
-
-            <!-- 🌟 ESTOS SON LOS CAMPOS QUE PROBABLEMENTE FALTAN 🌟 -->
-            <div class="grid grid-cols-2 gap-4">
-                <div>
-                    <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Stock Diario</label>
-                    <input type="number" id="prod-stock-input" required class="w-full mt-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none">
-                </div>
-                <div>
-                    <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Tipo</label>
-                    <select id="prod-type-input" class="w-full mt-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none font-bold">
-                        <option value="simple">Simple (Soda/Lado)</option>
-                        <option value="compuesto">Compuesto (Pizza/Burger)</option>
-                    </select>
-                </div>
-            </div>
-
-            <div>
-                <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Descripción</label>
-                <textarea id="prod-desc-input" class="w-full mt-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none h-20"></textarea>
-            </div>
-            
-            <div class="flex items-center gap-3 p-4 bg-indigo-50 rounded-2xl">
-                <input type="checkbox" id="prod-avail-input" checked class="w-5 h-5 text-indigo-600 rounded">
-                <label for="prod-avail-input" class="text-sm font-bold text-indigo-700 uppercase tracking-tight">Disponible para venta</label>
-            </div>
-
-            <!-- Sección de Modificadores dentro del Modal -->
-            <div class="mt-6 border-t border-slate-100 pt-6">
-                <div class="flex justify-between items-center mb-4">
-                    <h4 class="text-[10px] font-black text-indigo-500 uppercase tracking-widest">Configuración de Extras</h4>
-                    <button type="button" onclick="addModifierGroup()" class="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-1 rounded font-bold hover:bg-indigo-100">+ Añadir Grupo</button>
-                </div>
-                
-                <!-- Aquí se inyectarán los grupos de modificadores -->
-                <div id="modifiers-config-container" class="space-y-4">
-                    <p class="text-center text-slate-300 text-[10px] py-4 italic">No hay extras configurados para este producto.</p>
-                </div>
-            </div>
-
-            <button type="submit" class="w-full mt-6 bg-indigo-600 text-white font-black py-4 rounded-2xl hover:bg-indigo-700 transition-all uppercase tracking-widest text-xs shadow-lg">Guardar Producto</button>
-        </form>
-        </div>
-    </div>
-</div>
-
-    <script>
-    // 1. RECUPERAR DATOS
-    const token = localStorage.getItem('token');
-    const user = JSON.parse(localStorage.getItem('user'));
-
-    if (!token) {
-        window.location.href = 'login.html';
-    }
-
-    // 2. CONFIGURACIÓN DEL SOCKET
-    // === CONEXIÓN AL SOCKET ===
-    console.log("🚀 Iniciando conexión...");
-    
-    const socket = io(window.location.origin, { 
-        auth: { token: token },
-        query: { token: token }, // Fallback para mayor compatibilidad
-        transports: ['polling', 'websocket'] // Empieza por lo seguro y sube a lo rápido
-    });
-
-    socket.on('connect', () => {
-        console.log("✅ CONEXIÓN ESTABLECIDA. ID:", socket.id);
-    });
-
-    socket.on('SERVER_READY', (data) => {
-        console.log("📡 CONFIRMACIÓN:", data.message);
-    });
-
-    socket.on('connect_error', (err) => {
-        console.error("❌ ERROR CRÍTICO:", err.message);
-        if (err.message === "authentication_error") {
-            alert("Tu sesión ha expirado. Por favor reingresa.");
-            logout();
-        }
-    });
-
-     socket.on('NUEVO_PEDIDO', (pedido) => {
-     console.log("🎯 [Socket] Nuevo pedido recibido:", pedido.numero_pedido);
-        const sound = document.getElementById('notif-sound');
-        if (sound) sound.play().catch(() => {});
-        fetchOrders();
-        updateStats(); // Si tienes esta función disponible
-    });
-
-
-    // Llenar datos de usuario en la UI
-    document.getElementById('user-name').innerText = user?.nombre || 'Admin';
-    document.getElementById('user-initial').innerText = (user?.nombre || 'U').charAt(0).toUpperCase();
-    document.getElementById('store-name').innerText = user?.restaurante || 'Cargando...';
-
-
-    // === 3. NAVEGACIÓN ===
-    // === 3. NAVEGACIÓN ENTRE VISTAS ===
-    function showView(viewId) {
-    console.log("Cambiando a vista:", viewId); // Para saber que el botón funciona
-
-    // Ocultar todas las secciones
-    document.querySelectorAll('section').forEach(s => s.classList.add('hidden'));
-    // Quitar el color azul de todos los botones del menú lateral
-    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active-link'));
-    
-    // Mostrar la sección seleccionada
-    const targetSection = document.getElementById(`view-${viewId}`);
-    if (targetSection) targetSection.classList.remove('hidden');
-
-    // Poner en azul el botón del menú lateral seleccionado
-    const targetNav = document.getElementById(`nav-${viewId}`);
-    if (targetNav) targetNav.classList.add('active-link');
-    
-    // Actualizar el título de la parte superior
-    const titles = { 
-        'comandas': 'Comandas Live', 
-        'catalogo': 'Gestión de Catálogo', // 👈 Título actualizado
-        'ajustes': 'Configuración del Negocio' 
-    };
-    document.getElementById('view-title').innerText = titles[viewId] || 'Panel';
-
-    // 🌟 ESTA ES LA MAGIA: Cargar datos según la pestaña
-    if (viewId === 'comandas') {
-        fetchOrders(); // Refresca pedidos
-    } else if (viewId === 'catalogo') {
-        fetchCatalog(); // 👈 Llama a la función que descarga los productos
-    }
-}
-
-    // === 4. LÓGICA DE NEGOCIO ===
-    let menuItems = [];
-    let tempOrderItems = [];
-    let currentDeliveryMode = 'PICKUP';
-
-    async function fetchOrders() {
-        try {
-            const res = await fetch(`/api/pedidos`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            if (res.status === 401) logout();
-            const data = await res.json();
-            renderOrders(data);
-            updateStats(data);
-        } catch (err) { console.error("Error cargando pedidos", err); }
-    }
-
-    async function fetchMenu() {
-        try {
-            const res = await fetch(`/api/menu`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            menuItems = await res.json();
-            const select = document.getElementById('prod-select');
-            if (select) {
-                select.innerHTML = '<option value="">-- Selecciona --</option>' + 
-                    menuItems.map(i => `<option value="${i._id}">${i.nombre} - $${(i.precioBase/100).toFixed(2)}</option>`).join('');
-            }
-        } catch (err) { console.error("Error menu", err); }
-    }
-
-    function renderOrders(pedidos) {
-        const grid = document.getElementById('orders-grid');
-        if (!pedidos || pedidos.length === 0) {
-            grid.innerHTML = `<div class="col-span-full py-20 text-center text-slate-300 font-black uppercase tracking-widest">No hay pedidos</div>`;
-            return;
-        }
-
-grid.innerHTML = pedidos.map(p => `
-    <div class="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden status-${p.estado.toLowerCase().replace(/\s/g, '')}">
-        <div class="p-6">
-            <div class="flex justify-between items-start mb-4">
-                <div>
-                    <div class="flex items-center gap-2 mb-1">
-                        ${p.source === 'WHATSAPP' ? '<i class="fab fa-whatsapp text-green-500"></i>' : '<i class="fas fa-store text-blue-400"></i>'}
-                        <span class="text-[10px] font-black text-slate-300 uppercase">${p.source}</span>
-                    </div>
-                    <h3 class="text-lg font-black text-slate-800 tracking-tighter">#${p.numero_pedido} - ${p.nombreCliente}</h3>
-                </div>
-                <span class="text-[9px] font-black px-2 py-1 rounded-lg bg-slate-100 text-slate-500 uppercase">${p.estado}</span>
-            </div>
-
-            <!-- 🌟 NUEVO: BADGE DE MODO DE ENTREGA -->
-            <div class="mb-4">
-                <span class="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${p.entregaMode === 'DELIVERY' ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'}">
-                    ${p.entregaMode === 'DELIVERY' ? '<i class="fas fa-motorcycle mr-1"></i> A DOMICILIO' : '<i class="fas fa-shopping-bag mr-1"></i> PARA RECOGER'}
-                </span>
-            </div>
-
-            <div class="space-y-3 mb-6">
-                ${p.items.map(item => `
-                    <div class="flex justify-between items-center text-sm">
-                        <div class="font-bold text-slate-700">
-                            <span class="text-indigo-600 mr-1">${item.cantidad}x</span> ${item.nombre}
-                        </div>
-                        <span class="text-xs font-bold text-slate-300">$${(item.precioUnitario/100).toFixed(2)}</span>
-                    </div>
-                    <!-- Mostrar extras si existen -->
-                    ${item.opcionesSeleccionadas?.length > 0 ? 
-                        item.opcionesSeleccionadas.map(opt => `<p class="text-[10px] text-slate-400 ml-5">+ ${opt.opcionNombre}</p>`).join('') 
-                        : ''}
-                `).join('')}
-            </div>
-
-            <!-- 📍 DIRECCIÓN (Solo si es domicilio) -->
-            ${p.entregaMode === 'DELIVERY' ? `
-                <div class="mb-6 p-3 bg-slate-50 rounded-xl border border-dashed border-slate-200">
-                    <p class="text-[10px] font-black text-slate-400 uppercase mb-1">Entregar en:</p>
-                    <p class="text-xs font-medium text-slate-600">${p.direccionEntrega}</p>
-                </div>
-            ` : ''}
-
-            <div class="flex flex-col gap-2">
-                ${getActionButtons(p)}
-            </div>
-            <p class="text-center text-[9px] font-bold text-slate-300 mt-4 uppercase">${new Date(p.createdAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</p>
-        </div>
-    </div>
-`).join('');    }
-
-    function getActionButtons(p) {
-        const btnClass = "text-[10px] font-black py-3 rounded-2xl transition-all uppercase tracking-widest shadow-sm";
-        if (p.estado === 'Pendiente') return `<button onclick="changeStatus('${p._id}', 'Confirmado')" class="${btnClass} bg-indigo-600 text-white hover:bg-indigo-700">Confirmar</button>`;
-        if (p.estado === 'Confirmado' || p.estado === 'En Preparación') return `<button onclick="changeStatus('${p._id}', 'En Camino')" class="${btnClass} bg-emerald-500 text-white hover:bg-emerald-600">${p.entregaMode === 'PICKUP' ? 'Listo para Recoger' : 'Enviar Repartidor'}</button>`;
-        if (p.estado === 'En Camino') return `<button onclick="changeStatus('${p._id}', 'Entregado')" class="${btnClass} bg-slate-800 text-white hover:bg-black">Archivar</button>`;
-        return '';
-    }
-
-    async function changeStatus(id, nuevoEstado) {
-        await fetch(`/api/pedidos/${id}/status`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-            body: JSON.stringify({ nuevoEstado })
-        });
-        fetchOrders();
-    }
-
-    // === 5. MODAL POS OMNICANAL ===
-    function openModal() { 
-        document.getElementById('modal-order').classList.remove('hidden'); 
-        document.body.classList.add('modal-active'); 
-    }
-
-    function closeModal() {
-        document.getElementById('modal-order').classList.add('hidden');
-        document.body.classList.remove('modal-active');
-        
-        // Limpieza segura (solo si existen los elementos)
-        tempOrderItems = [];
-        const idsToClear = ['cust-name', 'cust-phone', 'cust-address', 'prod-select'];
-        idsToClear.forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.value = "";
-        });
-        const modCont = document.getElementById('modifiers-container');
-        if (modCont) modCont.innerHTML = "";
-        
-        renderTempOrder();
-    }
-
-    function logout() { localStorage.clear(); window.location.href = 'login.html'; }
-
-    function setDeliveryMode(mode) {
-        currentDeliveryMode = mode;
-        const isDelivery = mode === 'DELIVERY';
-        const addrField = document.getElementById('cust-address');
-        if (addrField) addrField.classList.toggle('hidden', !isDelivery);
-        
-        document.getElementById('btn-pickup').className = `flex-1 py-2 rounded-lg text-[10px] font-black border-2 ${!isDelivery ? 'border-indigo-600 bg-indigo-50 text-indigo-600' : 'border-transparent bg-slate-100 text-slate-500'}`;
-        document.getElementById('btn-delivery').className = `flex-1 py-2 rounded-lg text-[10px] font-black border-2 ${isDelivery ? 'border-indigo-600 bg-indigo-50 text-indigo-600' : 'border-transparent bg-slate-100 text-slate-500'}`;
-    }
-
-    function renderModifiers() {
-        const productId = document.getElementById('prod-select').value;
-        const item = menuItems.find(i => i._id === productId);
-        const container = document.getElementById('modifiers-container');
-        if (!container) return;
-        container.innerHTML = '';
-
-        if (item && item.modificadores) {
-            item.modificadores.forEach(grupo => {
-                const groupTitle = document.createElement('p');
-                groupTitle.className = "text-[9px] font-bold text-slate-400 uppercase mt-2";
-                groupTitle.innerText = grupo.nombre;
-                container.appendChild(groupTitle);
-
-                grupo.opciones.forEach(opt => {
-                    const div = document.createElement('div');
-                    div.className = "flex items-center justify-between bg-white p-2 rounded-lg border border-slate-100 mb-1";
-                    div.innerHTML = `
-                        <label class="text-xs font-medium text-slate-600 flex items-center gap-2 cursor-pointer">
-                            <input type="checkbox" class="mod-checkbox w-4 h-4 rounded text-indigo-600" 
-                                data-group="${grupo.nombre}" data-name="${opt.nombre}" data-price="${opt.precioAdicional || 0}">
-                            ${opt.nombre}
-                        </label>
-                        <span class="text-[10px] font-bold text-slate-400">+ $${((opt.precioAdicional || 0)/100).toFixed(2)}</span>
-                    `;
-                    container.appendChild(div);
-                });
-            });
-        }
-    }
-
-    function addItemToTempOrder() {
-        const productId = document.getElementById('prod-select').value;
-        const item = menuItems.find(i => i._id === productId);
-        if (!item) return alert("Selecciona un producto");
-
-        const selectedModifiers = [];
-        let extrasTotal = 0;
-        
-        document.querySelectorAll('.mod-checkbox:checked').forEach(cb => {
-            const price = parseInt(cb.dataset.price);
-            selectedModifiers.push({
-                grupoNombre: cb.dataset.group,
-                opcionNombre: cb.dataset.name,
-                precioExtra: price
-            });
-            extrasTotal += price;
-        });
-
-        tempOrderItems.push({
-            itemId: item._id,
-            nombre: item.nombre,
-            precioUnitario: item.precioBase + extrasTotal,
-            opcionesSeleccionadas: selectedModifiers,
-            cantidad: 1
-        });
-
-        renderTempOrder();
-        document.getElementById('prod-select').value = "";
-        document.getElementById('modifiers-container').innerHTML = "";
-    }
-
-    function renderTempOrder() {
-        const list = document.getElementById('temp-items-list');
-        const totalDisp = document.getElementById('temp-total');
-        if (!list || !totalDisp) return;
-        let total = 0;
-
-        if (tempOrderItems.length === 0) {
-            list.innerHTML = '<p class="text-center text-slate-400 text-xs py-10 italic">No hay productos aún</p>';
-            totalDisp.innerText = "$0.00";
-            return;
-        }
-
-        list.innerHTML = tempOrderItems.map((item, index) => {
-            total += item.precioUnitario;
-            return `
-                <div class="bg-white p-3 rounded-xl border border-slate-200 relative mb-2">
-                    <button onclick="removeTempItem(${index})" class="absolute -top-2 -right-2 bg-red-500 text-white w-5 h-5 rounded-full text-[10px] shadow-sm flex items-center justify-center">×</button>
-                    <div class="flex justify-between items-start">
-                        <span class="text-xs font-black text-slate-700">${item.nombre}</span>
-                        <span class="text-xs font-black text-indigo-600">$${(item.precioUnitario/100).toFixed(2)}</span>
-                    </div>
-                    ${item.opcionesSeleccionadas.map(opt => `<p class="text-[9px] text-slate-400">+ ${opt.opcionNombre}</p>`).join('')}
-                </div>
-            `;
-        }).join('');
-
-        totalDisp.innerText = `$${(total / 100).toFixed(2)}`;
-    }
-
-    function removeTempItem(index) {
-        tempOrderItems.splice(index, 1);
-        renderTempOrder();
-    }
-
-    async function submitFinalOrder() {
-        if (tempOrderItems.length === 0) return alert("Agrega al menos un producto");
-        
-        const payload = {
-            customerName: document.getElementById('cust-name').value || "Cliente Directo",
-            customerPhone: document.getElementById('cust-phone').value,
-            metodoPago: document.getElementById('pay-method').value,
-            deliveryMode: currentDeliveryMode,
-            direccionEntrega: currentDeliveryMode === 'DELIVERY' ? document.getElementById('cust-address').value : 'RECOGIDA EN TIENDA',
-            items: tempOrderItems
-        };
-
-        const btn = document.getElementById('btn-submit-order');
-        btn.disabled = true;
-        btn.innerText = "ENVIANDO...";
-
-        try {
-            const res = await fetch('/api/pedidos/directo', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify(payload)
-            });
-
-            if (res.ok) {
-                closeModal();
-                fetchOrders();
-            } else {
-                const errorData = await res.json();
-                console.error("Error del servidor:", errorData);
-                alert("Error del servidor: " + (errorData.message || "Desconocido"));
-            }
-        } catch (err) { 
-            console.error("Fallo de red:", err);
-            alert("Fallo al conectar con el servidor."); 
-        } finally { 
-            btn.disabled = false; 
-            btn.innerText = "CREAR PEDIDO FINAL"; 
-        }
-    }
-
-    function updateStats(pedidos) {
-        document.getElementById('stat-pending').innerText = pedidos.filter(p => p.estado === 'Pendiente').length;
-        document.getElementById('stat-kitchen').innerText = pedidos.filter(p => p.estado === 'Confirmado' || p.estado === 'En Preparación').length;
-        document.getElementById('stat-delivery').innerText = pedidos.filter(p => p.estado === 'En Camino').length;
-        const total = pedidos.reduce((acc, p) => acc + (p.total / 100), 0);
-        document.getElementById('stat-sales').innerText = `$${total.toLocaleString('es-MX', { minimumFractionDigits: 2 })}`;
-    }
-
-    // Lógica para cargar y renderizar el catálogo en la tabla
-    async function fetchCatalog() {
-        try {
-            const res = await fetch(`/api/menu`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            const items = await res.json();
-            renderCatalog(items);
-            
-            // Actualizamos también el select del modal de órdenes con los datos frescos
-            const select = document.getElementById('prod-select');
-            if (select) {
-                select.innerHTML = '<option value="">-- Selecciona --</option>' + 
-                    items.map(i => `<option value="${i._id}">${i.nombre} - $${(i.precioBase/100).toFixed(2)}</option>`).join('');
-            }
-        } catch (err) { console.error("Error catálogo", err); }
-    }
-
-    function renderCatalog(items) {
-        const tbody = document.getElementById('catalog-table-body');
-        if (!tbody) return;
-
-        tbody.innerHTML = items.map(i => `
-            <tr class="hover:bg-slate-50/50 transition-colors">
-                <td class="px-6 py-4">
-                    <p class="font-bold text-slate-800 text-sm">${i.nombre}</p>
-                    <p class="text-[10px] text-slate-400 truncate max-w-[200px]">${i.descripcion || 'Sin descripción'}</p>
-                </td>
-                <td class="px-6 py-4">
-                    <span class="px-2 py-1 bg-slate-100 text-slate-500 text-[9px] font-black rounded uppercase">${i.categoria}</span>
-                </td>
-                <td class="px-6 py-4 text-sm font-bold text-slate-700">
-                    $${(i.precioBase / 100).toFixed(2)}
-                </td>
-                <td class="px-6 py-4">
-                    <span class="flex items-center gap-1.5 ${i.disponible ? 'text-emerald-500' : 'text-red-400'} text-[10px] font-bold uppercase">
-                        <span class="w-1.5 h-1.5 rounded-full ${i.disponible ? 'bg-emerald-500' : 'bg-red-400'}"></span>
-                        ${i.disponible ? 'Activo' : 'Agotado'}
-                    </span>
-                </td>
-                <td class="px-6 py-4 text-right space-x-2">
-                    <button onclick="editProduct('${i._id}')" class="text-indigo-600 hover:text-indigo-900 transition-colors"><i class="fas fa-edit"></i></button>
-                    <button onclick="deleteProduct('${i._id}')" class="text-red-300 hover:text-red-600 transition-colors"><i class="fas fa-trash"></i></button>
-                </td>
-            </tr>
-        `).join('');
-    }
-
-    // Modales del Catálogo
-    function openProductModal(isEdit = false) {
-        document.getElementById('modal-product').classList.remove('hidden');
-        document.getElementById('product-modal-title').innerText = isEdit ? 'Editar Producto' : 'Nuevo Producto';
-    }
-
-    function closeProductModal() {
-        document.getElementById('modal-product').classList.add('hidden');
-        document.getElementById('product-form').reset();
-        document.getElementById('prod-id').value = "";
-    }
-
-    async function editProduct(id) {
-    try {
-        // Obtenemos los items directamente de la tabla o del API
-        const res = await fetch(`/api/menu`, { headers: { 'Authorization': `Bearer ${token}` } });
-        const items = await res.json();
-        const i = items.find(item => item._id === id);
-        
-        if (i) {
-            console.log("Editando producto:", i.nombre);
-            
-            // Llenar campos con seguridad
-            const setVal = (id, val) => {
-                const el = document.getElementById(id);
-                if (el) el.value = val;
-                else console.warn(`⚠️ No se encontró el campo con ID: ${id}`);
-            };
-
-            setVal('prod-id', i._id);
-            setVal('prod-name-input', i.nombre);
-            setVal('prod-price-input', i.precioBase / 100);
-            setVal('prod-cat-input', i.categoria);
-            setVal('prod-desc-input', i.descripcion || "");
-            setVal('prod-stock-input', i.cantidad_diaria || 99);
-            setVal('prod-type-input', i.tipoProducto || 'simple');
-            
-            const availCheck = document.getElementById('prod-avail-input');
-            if (availCheck) availCheck.checked = i.disponible;
-
-            // Al cargar los datos para editar
-            currentProductModifiers = i.modificadores || []; // Cargamos los modificadores de la DB
-            renderModifiersConfig(); // Dibujamos la interfaz de extras
-
-            openProductModal(true);
-        }
-    } catch (err) {
-        console.error("Error al cargar datos para editar:", err);
-    }
-}
-
-let currentProductModifiers = []; // Almacén temporal mientras editamos
-
-function addModifierGroup() {
-    const newGroup = {
-        nombre: "Nuevo Grupo (ej: Ingredientes)",
-        minimo: 0,
-        maximo: 1,
-        permiteExcedente: true,
-        opciones: [{ nombre: "Opción 1", precioAdicional: 0, disponible: true }]
-    };
-    currentProductModifiers.push(newGroup);
-    renderModifiersConfig();
-}
-
-function renderModifiersConfig() {
-    const container = document.getElementById('modifiers-config-container');
-    if (currentProductModifiers.length === 0) {
-        container.innerHTML = '<p class="text-center text-slate-300 text-[10px] py-4 italic">No hay extras configurados.</p>';
-        return;
-    }
-
-    container.innerHTML = currentProductModifiers.map((grupo, gIdx) => `
-        <div class="bg-slate-50 p-4 rounded-2xl border border-slate-100 relative">
-            <button type="button" onclick="removeGroup(${gIdx})" class="absolute top-2 right-2 text-slate-300 hover:text-red-500"><i class="fas fa-times"></i></button>
-            
-            <div class="grid grid-cols-2 gap-2 mb-3">
-                <input type="text" value="${grupo.nombre}" onchange="updateGroupName(${gIdx}, this.value)" placeholder="Nombre del grupo" class="col-span-2 px-3 py-2 text-xs font-bold bg-white border border-slate-200 rounded-lg outline-none">
-                <div class="flex items-center gap-1">
-                    <label class="text-[8px] font-black text-slate-400 uppercase">Min</label>
-                    <input type="number" value="${grupo.minimo}" onchange="updateGroupMin(${gIdx}, this.value)" class="w-full px-2 py-1 text-xs bg-white border border-slate-200 rounded">
-                </div>
-                <div class="flex items-center gap-1">
-                    <label class="text-[8px] font-black text-slate-400 uppercase">Max</label>
-                    <input type="number" value="${grupo.maximo}" onchange="updateGroupMax(${gIdx}, this.value)" class="w-full px-2 py-1 text-xs bg-white border border-slate-200 rounded">
-                </div>
-            </div>
-
-            <div class="space-y-2">
-                <p class="text-[8px] font-black text-slate-400 uppercase">Opciones (Nombre | +$)</p>
-                ${grupo.opciones.map((opt, oIdx) => `
-                    <div class="flex gap-2">
-                        <input type="text" value="${opt.nombre}" onchange="updateOptionName(${gIdx}, ${oIdx}, this.value)" class="flex-1 px-2 py-1 text-xs bg-white border border-slate-100 rounded">
-                        <input type="number" value="${opt.precioAdicional / 100}" onchange="updateOptionPrice(${gIdx}, ${oIdx}, this.value)" class="w-16 px-2 py-1 text-xs bg-white border border-slate-100 rounded">
-                        <button type="button" onclick="removeOption(${gIdx}, ${oIdx})" class="text-slate-300"><i class="fas fa-minus-circle"></i></button>
-                    </div>
-                `).join('')}
-                <button type="button" onclick="addOption(${gIdx})" class="text-[9px] font-bold text-indigo-500 hover:underline">+ Añadir opción</button>
-            </div>
-        </div>
-    `).join('');
-}
-
-// Funciones de actualización de datos (Mutation)
-const updateGroupName = (g, v) => currentProductModifiers[g].nombre = v;
-const updateGroupMin = (g, v) => currentProductModifiers[g].minimo = parseInt(v);
-const updateGroupMax = (g, v) => currentProductModifiers[g].maximo = parseInt(v);
-const addOption = (g) => { currentProductModifiers[g].opciones.push({ nombre: "Nueva", precioAdicional: 0, disponible: true }); renderModifiersConfig(); };
-const removeOption = (g, o) => { currentProductModifiers[g].opciones.splice(o, 1); renderModifiersConfig(); };
-const removeGroup = (g) => { currentProductModifiers.splice(g, 1); renderModifiersConfig(); };
-const updateOptionName = (g, o, v) => currentProductModifiers[g].opciones[o].nombre = v;
-const updateOptionPrice = (g, o, v) => currentProductModifiers[g].opciones[o].precioAdicional = Math.round(parseFloat(v) * 100);
-
-        // Busca el submit del product-form y cámbialo por este:
-        document.getElementById('product-form').onsubmit = async (e) => {
-            e.preventDefault();
-            
-            const payload = {
-                id: document.getElementById('prod-id').value,
-                nombre: document.getElementById('prod-name-input').value,
-                precioBase: document.getElementById('prod-price-input').value, // El controlador lo pasará a centavos
-                categoria: document.getElementById('prod-cat-input').value,
-                descripcion: document.getElementById('prod-desc-input').value,
-                disponible: document.getElementById('prod-avail-input').checked,
-                cantidad_diaria: document.getElementById('prod-stock-input').value,
-                tipoProducto: document.getElementById('prod-type-input').value,
-                modificadores: currentProductModifiers 
-            };
-
-            // ✅ URL Corregida: Quitamos el /save
-            const res = await fetch('/api/menu', {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json', 
-                    'Authorization': `Bearer ${token}` 
-                },
-                body: JSON.stringify(payload)
-            });
-
-            if (res.ok) {
-                console.log("✅ Producto guardado");
-                closeProductModal();
-                fetchCatalog(); 
-            } else {
-                alert("Error al guardar el producto");
-            }
-        };
-
-// Y en la función editProduct(id), asegúrate de llenar los nuevos campos:
-function fillEditModal(i) {
-    document.getElementById('prod-id').value = i._id;
-    document.getElementById('prod-name-input').value = i.nombre;
-    document.getElementById('prod-price-input').value = i.precioBase / 100;
-    document.getElementById('prod-cat-input').value = i.categoria;
-    document.getElementById('prod-desc-input').value = i.descripcion || "";
-    document.getElementById('prod-avail-input').checked = i.disponible;
-    document.getElementById('prod-stock-input').value = i.cantidad_diaria || 99;
-    document.getElementById('prod-type-input').value = i.tipoProducto || 'simple';
-    openProductModal(true);
-}
-
-    async function deleteProduct(id) {
-        if (!confirm("¿Seguro que deseas eliminar este producto?")) return;
-        const res = await fetch(`/api/menu/${id}`, {
-            method: 'DELETE',
-            headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (res.ok) fetchCatalog();
-    }
-
-    // INICIALIZACIÓN
-    fetchOrders();
-    fetchCatalog();
-    fetchMenu();
-</script>
+    <!-- CARGA DE LÓGICA MODULAR -->
+    <script type="module" src="./js/app.js"></script>
 </body>
 </html>

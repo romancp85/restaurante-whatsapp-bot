@@ -11,18 +11,22 @@ export const applyInference = (extractedData, currentTempData) => {
     let pagoLimpio = clean(metodoPago);
 
     // 📍 Inferencia de Entrega
-    if (dirLimpia && !modoLimpio) modoLimpio = 'DELIVERY';
-
-    // 💳 Inferencia de Pago (Basada en palabras clave)
-    const notas = [clean(notasPago), clean(notasCocina)].filter(Boolean).join(' ').toLowerCase();
+    // 🌟 MEJORA: Si la dirección parece una instrucción de Recoger
+    if (dirLimpia && (dirLimpia.toLowerCase().includes('recoger') || dirLimpia.toLowerCase().includes('tienda'))) {
+        console.log("-> Inferencia: El usuario quiere recoger, no es una dirección.");
+        modoLimpio = 'PICKUP';
+        dirLimpia = 'RECOGIDA EN TIENDA'; // Limpiamos el texto basura
+    }
+    // 💳 Inferencia de Pago
+    const notas = [clean(notasPago || notasPago), clean(notasCocina)].filter(Boolean).join(' ').toLowerCase();
     if (!pagoLimpio) {
         if (notas.includes('billete') || notas.includes('cambio') || notas.includes('efectivo')) pagoLimpio = 'Efectivo';
         else if (notas.includes('tarjeta') || notas.includes('terminal')) pagoLimpio = 'Tarjeta';
-        else if (notas.includes('transferencia')) pagoLimpio = 'Transferencia';
     }
 
-    // Retornamos el objeto de datos actualizado
+    // 🌟 REGLA DE ORO: No sobrescribir lo que el usuario borró manualmente
     return {
+        ...currentTempData, // Mantenemos el historial y otros campos
         name: clean(nombre) || currentTempData.name,
         address: dirLimpia || currentTempData.address,
         deliveryMode: modoLimpio || currentTempData.deliveryMode,

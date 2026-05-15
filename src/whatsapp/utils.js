@@ -181,17 +181,18 @@ export const sendCartSummary = async (to, cart, businessId, auth) => {
             const cantidad = item.cantidad || 1; 
             summaryText += `*${cantidad}x ${item.nombre}*\n`;
             
-            // Mostrar notas de cocina si existen
-            if (item.notas) summaryText += `_Nota: ${item.notas}_\n`; 
+            // 🌟 LIMPIEZA TOP-TIER: Solo mostrar la nota si existe y no es el texto "null"
+    if (item.notas && item.notas !== 'null' && item.notas.trim() !== "") {
+        summaryText += `_Nota: ${item.notas}_\n`; 
+    }
 
-            // Mostrar modificadores (pizzas con extra queso, etc.)
-            if (item.opcionesSeleccionadas?.length > 0) {
-                item.opcionesSeleccionadas.forEach(opt => {
-                    const precioExtra = opt.precioExtra > 0 ? ` (+${formatPrice(opt.precioExtra)})` : "";
-                    summaryText += `  + ${opt.opcionNombre}${precioExtra}\n`;
-                });
-            }
-            summaryText += `Subtotal: ${formatPrice(item.precioUnitario * cantidad)}\n\n`;
+    if (item.opcionesSeleccionadas?.length > 0) {
+        item.opcionesSeleccionadas.forEach(opt => {
+            const precioExtra = opt.precioExtra > 0 ? ` (+${formatPrice(opt.precioExtra)})` : "";
+            summaryText += `  + ${opt.opcionNombre}${precioExtra}\n`;
+        });
+    }
+    summaryText += `Subtotal: ${formatPrice(item.precioUnitario * cantidad)}\n\n`;
         });
         
         summaryText += "━━━━━━━━━━━━━━\n";

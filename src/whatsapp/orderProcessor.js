@@ -2,41 +2,28 @@
 import Pedido from '../models/Pedido.js';
 import ShoppingCart from '../models/ShoppingCart.js';
 import Restaurante from '../models/Restaurante.js'; 
-import MenuItem from '../models/MenuItem.js'; // 👈 FALTA ESTA IMPORTACIÓN
+import MenuItem from '../models/MenuItem.js'; 
 import { sendMessage, formatPrice } from './utils.js';
 import logger from '../utils/logger.js';
 
 export const processFinalOrder = async (userId, cart, businessId, auth, financieros) => {
     try {
         const { items, tempData } = cart;
-
-        // 1. OBTENER CONFIGURACIÓN DEL RESTAURANTE
         const restaurante = await Restaurante.findById(businessId).lean();
 
-        // 2. LIMPIEZA Y NORMALIZACIÓN DE DATOS
-        const nombreCliente = (tempData.name && tempData.name !== 'null' && tempData.name !== 'undefined') 
-            ? tempData.name 
-            : 'Cliente WhatsApp';
+        // 1. NORMALIZACIÓN DE IDENTIDAD
+        const nombreCliente = (tempData.name && tempData.name !== 'null') ? tempData.name : 'Cliente WhatsApp';
+        const metodoPago = (tempData.paymentMethod || 'Efectivo').toUpperCase();
+        const esTransferencia = metodoPago === 'TRANSFERENCIA';
 
-        const notasPago = tempData.notasPago || "";
-        const notasGlobalesCocina = tempData.notasCocina || "";
-        const orderNotesExtra = tempData.orderNotes || "";
-
-        const comentariosFinales = [notasPago, orderNotesExtra].filter(Boolean).join(" - ");
-
-        const esPickup = financieros.esPickup;
-        const totalFinal = financieros.total;
-        const subtotalFinal = financieros.subtotal;
-        const envioFinal = financieros.envio;
-
-        // 3. CREAR EL PEDIDO INMUTABLE EN LA DB
+        // 2. CREAR EL PEDIDO (Estado inicial depende del pago)
         const nuevoPedido = new Pedido({
             businessId: businessId,
             telefonoCliente: userId,
             clienteId: userId, 
             nombreCliente: nombreCliente,
-            direccionEntrega: esPickup ? 'RECOGIDA EN TIENDA' : (tempData.address || 'No especificada'),
-            comentarios: comentariosFinales, 
+            direccionEntrega: financieros.esPickup ? 'RECOGIDA EN TIENDA' : (tempData.address || 'No especificada'),
+            comentarios: [tempData.notasPago, tempData.orderNotes].filter(Boolean).join(" - "), 
             items: items.map(item => ({
                 itemId: item.itemId,
                 nombre: item.nombre,
@@ -45,17 +32,18 @@ export const processFinalOrder = async (userId, cart, businessId, auth, financie
                 opcionesSeleccionadas: item.opcionesSeleccionadas || [],
                 notas: item.notas || "" 
             })),
-            subtotal: subtotalFinal,
-            costoEnvio: envioFinal, 
-            total: totalFinal,
+            subtotal: financieros.subtotal,
+            costoEnvio: financieros.envio, 
+            total: financieros.total,
             metodoPago: tempData.paymentMethod || 'Efectivo',
-            entregaMode: esPickup ? 'PICKUP' : 'DELIVERY',
-            estado: 'Pendiente', 
+            entregaMode: financieros.esPickup ? 'PICKUP' : 'DELIVERY',
+            // 💰 Si es transferencia, entra como "Pendiente de Pago"
+            estado: esTransferencia ? 'Pendiente de Pago' : 'Pendiente', 
         });
-        
+
         await nuevoPedido.save();
 
-        // 🌟 ACTUALIZACIÓN DE STOCK (VENDIDAS HOY)
+        // 3. ACTUALIZACIÓN ATÓMICA DE STOCK
         try {
             const bulkOps = nuevoPedido.items.map(item => ({
                 updateOne: {
@@ -63,52 +51,53 @@ export const processFinalOrder = async (userId, cart, businessId, auth, financie
                     update: { $inc: { vendidas_hoy: item.cantidad } }
                 }
             }));
-            
-            if (bulkOps.length > 0) {
-                await MenuItem.bulkWrite(bulkOps);
-                logger.info(`[Stock] Inventario actualizado para pedido #${nuevoPedido.numero_pedido}`);
-            }
+            if (bulkOps.length > 0) await MenuItem.bulkWrite(bulkOps);
         } catch (stockError) {
-            logger.error(`Error al actualizar stock del pedido ${nuevoPedido.numero_pedido}:`, stockError);
-            // No bloqueamos el pedido si falla el stock, solo lo logueamos
+            logger.error(`[Stock Error] Pedido #${nuevoPedido.numero_pedido}: ${stockError.message}`);
         }
 
-        // 🌟 BORRADO TOTAL DE LA SESIÓN
-        await ShoppingCart.deleteOne({ whatsappId: userId, businessId: businessId }); 
-        logger.info(`[SaaS] Sesión limpiada con éxito para ${userId}`);
-
-        // 4. CONSTRUCCIÓN DEL MENSAJE DE ÉXITO
-        const idPedido = nuevoPedido.numero_pedido || nuevoPedido._id.toString().slice(-6).toUpperCase();
-        
-        let confirmText = esPickup 
-            ? `✅ *¡PEDIDO RECIBIDO! (#${idPedido})*\n\n`
-            : `✅ *¡PEDIDO REGISTRADO! (#${idPedido})*\n\n`;
-
-        confirmText += `Gracias *${nombreCliente}*, estamos preparando tu orden.\n`;
-        confirmText += `\n*Detalles:*`;
-        confirmText += `\n💰 Total: ${formatPrice(totalFinal)}`;
-        confirmText += `\n📍 ${esPickup ? '*Retiro en Sucursal*' : '*Dirección:* ' + nuevoPedido.direccionEntrega}`;
-        confirmText += `\n💳 Pago: ${nuevoPedido.metodoPago}`;
-
-        const notasParaTicket = [notasGlobalesCocina, notasPago].filter(Boolean).join(" | ");
-        if (notasParaTicket) {
-            confirmText += `\n📝 *Notas:* ${notasParaTicket}`;
-        }
-
-        // LÓGICA DE TRANSFERENCIA
-        if (nuevoPedido.metodoPago.toUpperCase() === 'TRANSFERENCIA') {
-            const infoBanco = restaurante.configuracion?.datosTransferencia;
-            if (infoBanco) {
-                confirmText += `\n\n━━━━━━━━━━━━━━\n${infoBanco}\n━━━━━━━━━━━━━━`;
+        // 4. 🌟 SOFT RESET (MEMORIA POST-VENTA)
+        // En lugar de borrar, limpiamos lo operativo pero mantenemos la conversación
+         await ShoppingCart.updateOne(
+            { whatsappId: userId, businessId: businessId },
+            { 
+                $set: { 
+                    items: [],          // 🗑️ Vaciamos la bolsa física
+                    totalCents: 0,      // 💰 Reseteamos el dinero
+                    conversationState: esTransferencia ? 'ESPERANDO_COMPROBANTE' : 'POST_VENTA',
+                    tempData: {
+                    ...tempData,
+                    history: tempData.history.slice(-4), // Mantenemos solo un poco de memoria
+                    lastProductDiscussed: null, // 👈 VITAL: Borrar el ancla
+                    deliveryMode: null,
+                    address: null,
+                    paymentMethod: null
+                    }
+                }
             }
-        }
+        );
+        logger.info(`[SaaS] Sesión evolucionada a POST_VENTA para ${userId}`);
+        //logger.info(`[SaaS] Sesión evolucionada a ${esTransferencia ? 'ESPERANDO_COMPROBANTE' : 'POST_VENTA'} para ${userId}`);
 
-        confirmText += esPickup 
-            ? "\n\nTe avisaremos cuando esté listo para retirar. 🛍️"
-            : "\n\nTe avisaremos cuando el repartidor vaya en camino. 🛵";
+        // 5. CONSTRUCCIÓN DEL MENSAJE (Luxury Experience)
+        const idPedido = nuevoPedido.numero_pedido;
+        let confirmText = `✅ *¡PEDIDO REGISTRADO! (#${idPedido})*\n\n`;
+        confirmText += `Gracias *${nombreCliente}*, hemos recibido tu solicitud.\n`;
+        confirmText += `\n💰 *Total:* ${formatPrice(financieros.total)}`;
+        confirmText += `\n💳 *Pago:* ${nuevoPedido.metodoPago}`;
+        confirmText += `\n📍 *Entrega:* ${nuevoPedido.direccionEntrega}\n`;
+
+        if (esTransferencia) {
+            const infoBanco = restaurante.configuracion?.datosTransferencia || "Consultar datos con el establecimiento.";
+            confirmText += `\n━━━━━━━━━━━━━━\n*POR FAVOR ENVÍA TU COMPROBANTE:* \n${infoBanco}\n━━━━━━━━━━━━━━\n`;
+            confirmText += `\n_Una vez que envíes la foto del comprobante, validaremos tu pago para meter tu orden a cocina._ 📸`;
+        } else {
+            confirmText += financieros.esPickup 
+                ? "\nTe avisaremos por aquí cuando tu pedido esté listo para retirar. 🛍️"
+                : "\nTe avisaremos por aquí cuando el repartidor vaya en camino. 🛵";
+        }
         
         await sendMessage(userId, confirmText, auth);
-
         return nuevoPedido;
 
     } catch (error) {

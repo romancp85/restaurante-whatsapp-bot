@@ -1,37 +1,71 @@
+// src/services/orderValidator.js
 import MenuItem from '../models/MenuItem.js';
 import logger from '../utils/logger.js';
 
+/**
+ * Valida los ítems extraídos por la IA contra el catálogo real de la DB.
+ * Aplica Anclaje Semántico para resolver nombres con índices (ej: "1. Pizza")
+ */
 export const validarPedido = async (aiItems, businessId) => {
     try {
         if (!aiItems || !Array.isArray(aiItems)) return { itemsValidados: [], extrasRechazados: [] };
         
         const itemsValidados = [];
-        const extrasRechazados = []; // 🌟 Para reportar lo que no se pudo cobrar/poner
-        const menuItems = await MenuItem.find({ businessId, activo: true }).lean();
+        const extrasRechazados = []; 
+        
+        // Traemos el menú y lo ordenamos por longitud de nombre (Descendente)
+        // 💡 Truco Pro: Buscar primero los nombres más largos evita que "Pizza" 
+        // coincida erróneamente con "Pizza Pepperoni".
+        const menuItems = await MenuItem.find({ businessId, activo: true })
+            .lean()
+            .sort({ nombre: -1 });
 
         for (const aiItem of aiItems) {
-            const nombreBusqueda = (aiItem.productName || "").toLowerCase();
-            if (!nombreBusqueda) continue;
+            let nombreIA = (aiItem.productName || "").toLowerCase().trim();
+            if (!nombreIA) continue;
 
-            const productoReal = menuItems.find(p => 
-                nombreBusqueda.includes(p.nombre.toLowerCase()) ||
-                p.nombre.toLowerCase().includes(nombreBusqueda)
-            );
+            // 🌟 1. LIMPIEZA DE ÍNDICE (Anclaje Semántico)
+            // Quitamos el "1. " o "2 " del inicio si existe
+            const nombreLimpio = nombreIA.replace(/^\d+[\s.]+\s*/, '').trim();
 
-            if (!productoReal) continue;
+            // 🌟 2. BÚSQUEDA MULTI-NIVEL (Para máxima precisión)
+            let productoReal = menuItems.find(p => {
+                const nombreDB = p.nombre.toLowerCase();
+                
+                // Nivel A: Match Exacto (ej: "coca-cola original" === "coca-cola original")
+                if (nombreLimpio === nombreDB) return true;
+
+                // Nivel B: Match por Inclusión (ej: "coca" está en "coca-cola original")
+                if (nombreLimpio.length > 3 && (nombreLimpio.includes(nombreDB) || nombreDB.includes(nombreLimpio))) return true;
+
+                return false;
+            });
+
+            // 🌟 3. TRATAMIENTO DE PLURALES (Si falló la búsqueda inicial)
+            if (!productoReal && nombreLimpio.endsWith('s')) {
+                const nombreSingular = nombreLimpio.slice(0, -1);
+                productoReal = menuItems.find(p => {
+                    const nombreDB = p.nombre.toLowerCase();
+                    return nombreSingular.length > 3 && (nombreSingular.includes(nombreDB) || nombreDB.includes(nombreSingular));
+                });
+            }
+
+            if (!productoReal) {
+                logger.warn(`[Validator] Producto no encontrado: ${nombreIA}`);
+                continue;
+            }
+
 
             let precioExtraAcumulado = 0;
             const opcionesSeleccionadas = [];
             
-            // 🌟 LÓGICA DE VALIDACIÓN DE EXTRAS ACTIVA
+            // VALIDACIÓN DE MODIFICADORES (Agnóstica)
             if (aiItem.modifiers && Array.isArray(aiItem.modifiers)) {
-                // Creamos un set de lo que el usuario pidió para marcar qué sí encontramos
                 const modifiersSolicitados = [...aiItem.modifiers];
                 const modifiersEncontrados = new Set();
 
                 if (productoReal.modificadores?.length > 0) {
                     for (const grupo of productoReal.modificadores) {
-                        // Filtramos cuáles de los pedidos del usuario están en este grupo
                         const seleccionadosDelUsuario = modifiersSolicitados.filter(m => 
                             grupo.opciones.some(opt => opt.nombre.toLowerCase().includes(m.toLowerCase()))
                         );
@@ -42,7 +76,7 @@ export const validarPedido = async (aiItems, businessId) => {
                             );
 
                             if (opcionDB) {
-                                modifiersEncontrados.add(modNombre); // Marcamos como encontrado
+                                modifiersEncontrados.add(modNombre);
                                 const esExcedente = (index + 1) > grupo.maximo;
                                 if (esExcedente && !grupo.permiteExcedente) return;
                                 
@@ -58,20 +92,18 @@ export const validarPedido = async (aiItems, businessId) => {
                     }
                 }
 
-                // 🌟 DETECCIÓN DE HUÉRFANOS: Lo que el usuario pidió pero no está en la DB
+                // Detección de extras no existentes
                 const huerfanos = modifiersSolicitados.filter(m => !modifiersEncontrados.has(m));
                 if (huerfanos.length > 0) {
-                    extrasRechazados.push({
-                        producto: productoReal.nombre,
-                        extras: huerfanos
-                    });
+                    extrasRechazados.push({ producto: productoReal.nombre, extras: huerfanos });
                 }
             }
 
             const precioUnitarioFinal = productoReal.precioBase + precioExtraAcumulado;
-            const cantidad = aiItem.quantity || 1;
+            const cantidad = parseInt(aiItem.quantity) || 1;
             const notasItem = aiItem.notes || "";
 
+            // Agrupamiento en el carrito (Mismo ID + Mismos Extras + Mismas Notas)
             const itemExistenteIdx = itemsValidados.findIndex(v => 
                 v.itemId.toString() === productoReal._id.toString() && 
                 JSON.stringify(v.opcionesSeleccionadas) === JSON.stringify(opcionesSeleccionadas) &&
@@ -92,7 +124,6 @@ export const validarPedido = async (aiItems, businessId) => {
             }
         }
 
-        // 🌟 Retornamos objeto estructurado
         return { itemsValidados, extrasRechazados };
 
     } catch (error) {
@@ -102,7 +133,7 @@ export const validarPedido = async (aiItems, businessId) => {
 };
 
 /**
- * Función 2: Calcula los totales financieros finales
+ * Calcula los totales financieros finales
  */
 export const calcularTotalesFinales = (items, deliveryMode, restaurante) => {
     const subtotal = items.reduce((acc, item) => {
@@ -112,6 +143,7 @@ export const calcularTotalesFinales = (items, deliveryMode, restaurante) => {
     }, 0);
 
     const esPickup = deliveryMode === 'PICKUP';
+    // Leemos el costo de la configuración dinámica del restaurante
     const costoEnvioBase = restaurante.configuracion?.costoEnvioBase || 3000; 
     const costoEnvioFinal = esPickup ? 0 : costoEnvioBase;
 
