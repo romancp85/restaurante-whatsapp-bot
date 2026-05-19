@@ -1,4 +1,4 @@
-This file is a merged representation of a subset of the codebase, containing specifically included files, combined into a single document by Repomix.
+This file is a merged representation of a subset of the codebase, containing specifically included files and files not matching ignore patterns, combined into a single document by Repomix.
 
 <file_summary>
 This section contains a summary of this file.
@@ -33,6 +33,7 @@ The content is organized as follows:
 - Some files may have been excluded based on .gitignore rules and Repomix's configuration
 - Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
 - Only files matching these patterns are included: src/**/*.js, package.json
+- Files matching these patterns are excluded: node_modules, package-lock.json, .env, .git, dist, build, *.log, .vscode, .example, src/frontend, tmp, seedSaaS.js
 - Files matching patterns in .gitignore are excluded
 - Files matching default ignore patterns are excluded
 - Files are sorted by Git change count (files with more changes are at the bottom)
@@ -47,10 +48,19 @@ src/controllers/auth.controller.js
 src/controllers/config.controller.js
 src/controllers/menu.controller.js
 src/controllers/order.controller.js
-src/frontend/eslint.config.js
-src/frontend/postcss.config.js
-src/frontend/tailwind.config.js
-src/frontend/vite.config.js
+src/domains/semantic/detectors/detectProductReferences.js
+src/domains/semantic/detectors/extractReferences.js
+src/domains/semantic/detectors/inferModifiers.js
+src/domains/semantic/detectors/resolveContextReference.js
+src/domains/semantic/engine/executeSemanticOperations.js
+src/domains/semantic/indexers/buildSemanticMenuIndex.js
+src/domains/semantic/parsers/entityBinder.js
+src/domains/semantic/parsers/inferOperations.js
+src/domains/semantic/parsers/intentSegmenter.js
+src/domains/semantic/parsers/semanticChunker.js
+src/domains/semantic/ranking/rankProductCandidates.js
+src/domains/semantic/utils/normalizeText.js
+src/domains/semanticEngine.js
 src/handlers/flowHandler.js
 src/middleware/auth.middleware.js
 src/models/Configuracion.js
@@ -97,126 +107,944 @@ src/workers/orderWorker.js
 <files>
 This section contains the contents of the repository's files.
 
-<file path="src/services/securityService.js">
-// src/services/securityService.js
-import { connection as redis } from '../config/redis.js';
-import logger from '../utils/logger.js';
+<file path="src/domains/semantic/detectors/detectProductReferences.js">
+import { normalizeText } from "../utils/normalizeText.js";
 
-/**
- * Algoritmo: Fixed Window Counter
- * Propósito: Blindar el sistema contra spam y ataques de denegación de servicio (DDoS)
- */
-export const checkRateLimit = async (userId, businessId) => {
-    // Definimos los límites (Configurables vía .env en el futuro)
-    const USER_LIMIT = 10;      // 10 mensajes por minuto por usuario
-    const BUSINESS_LIMIT = 100; // 100 mensajes por minuto por restaurante (SaaS Guard)
-    const WINDOW = 60;          // Ventana de 60 segundos
+const STOP_WORDS = [
+  "hola",
+  "buenas",
+  "noches",
+  "tardes",
+  "dias",
+  "quiero",
+  "me",
+  "gustaria",
+  "una",
+  "uno",
+  "porfavor",
+  "favor",
+];
 
-    const userKey = `ratelimit:user:${userId}`;
-    const businessKey = `ratelimit:biz:${businessId}`;
+function singularize(word = "") {
+  return word.replace(/es$/i, "").replace(/s$/i, "");
+}
 
-    try {
-        // Ejecutamos ambas validaciones en paralelo para optimizar latencia
-        const [userCount, bizCount] = await Promise.all([
-            redis.incr(userKey),
-            redis.incr(businessKey)
-        ]);
+export function detectProductReferences({ text, menuMap = [] }) {
+  const normalizedText = normalizeText(text);
 
-        // Si es el primer mensaje de la ventana, establecemos expiración
-        if (userCount === 1) await redis.expire(userKey, WINDOW);
-        if (bizCount === 1) await redis.expire(businessKey, WINDOW);
+  const detected = [];
 
-        // 1. Validación de Usuario
-        if (userCount > USER_LIMIT) {
-            logger.warn(`🚫 [Security] Rate limit excedido por usuario: ${userId}`, { userId, count: userCount });
-            return { allowed: false, reason: 'USER_SPAM' };
-        }
+  for (const item of menuMap) {
+    const normalizedItem = normalizeText(item.nombre);
 
-        // 2. Validación de Negocio (Protección Multi-tenant)
-        if (bizCount > BUSINESS_LIMIT) {
-            logger.error(`🚨 [Security] Pico de tráfico detectado en Negocio: ${businessId}. Bloqueando preventivamente.`);
-            return { allowed: false, reason: 'BUSINESS_OVERLOAD' };
-        }
+    const itemWords = normalizedItem.split(" ").map(singularize);
 
-        return { allowed: true };
+    const textWords = normalizedText.split(" ").map(singularize);
 
-    } catch (error) {
-        // Principio de Disponibilidad: Si Redis falla, dejamos pasar el mensaje
-        // para no dejar al cliente colgado, pero alertamos en logs.
-        logger.error(`⚠️ [Security] Error en Rate Limiter, permitiendo por bypass: ${error.message}`);
-        return { allowed: true };
+    const matchedWords = itemWords.filter((word) => textWords.includes(word));
+
+    if (!matchedWords.length) {
+      continue;
     }
-};
-</file>
 
-<file path="src/frontend/eslint.config.js">
-import js from '@eslint/js'
-import globals from 'globals'
-import reactHooks from 'eslint-plugin-react-hooks'
-import reactRefresh from 'eslint-plugin-react-refresh'
-import { defineConfig, globalIgnores } from 'eslint/config'
+    const score = matchedWords.length / itemWords.length;
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{js,jsx}'],
-    extends: [
-      js.configs.recommended,
-      reactHooks.configs.flat.recommended,
-      reactRefresh.configs.vite,
-    ],
-    languageOptions: {
-      ecmaVersion: 2020,
-      globals: globals.browser,
-      parserOptions: {
-        ecmaVersion: 'latest',
-        ecmaFeatures: { jsx: true },
-        sourceType: 'module',
-      },
-    },
-    rules: {
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
-    },
-  },
-])
-</file>
+    detected.push({
+      type: "PRODUCT_CANDIDATE",
 
-<file path="src/frontend/postcss.config.js">
-module.exports = {
-  plugins: {
-    '@tailwindcss/postcss': {},
-    autoprefixer: {},
-  },
-};
-</file>
+      value: item.nombre,
 
-<file path="src/frontend/tailwind.config.js">
-/** @type {import('tailwindcss').Config} */
-module.exports = {
-  content: [
-    "./src/**/*.{js,jsx,ts,tsx}", // <-- IMPORTANTE
-  ],
-  theme: {
-    extend:{
-      colors: {
-        primary: "#E31837",   // rojo WhatsApp
-        dark: "#121212",
-        gray: "#1f1f1f"
-      }
-    },
-  },
-  plugins: [],
+      score,
+
+      matchedWords,
+    });
+  }
+
+  return detected;
 }
 </file>
 
-<file path="src/frontend/vite.config.js">
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+<file path="src/domains/semantic/detectors/extractReferences.js">
+import { normalizeText } from "../utils/normalizeText.js";
 
-// https://vite.dev/config/
-export default defineConfig({
-  plugins: [react()],
-})
+/**
+ * Detecta referencias a índices de menú SIN modificar el texto.
+ */
+
+function extractReferences(text = "") {
+  const normalized = normalizeText(text);
+
+  const references = [];
+
+  const regex = /(?:la|el|del|de la|#|n\.?|numero|opcion|item)\s*(\d+)/gi;
+
+  let match;
+
+  while ((match = regex.exec(normalized)) !== null) {
+    references.push({
+      type: "menu_index",
+      raw: match[0],
+      value: Number(match[1]),
+    });
+  }
+
+  // Caso especial:
+  // mensaje solo contiene número
+
+  if (/^\d+$/.test(normalized)) {
+    references.push({
+      type: "menu_index",
+      raw: normalized,
+      value: Number(normalized),
+      standalone: true,
+    });
+  }
+
+  return references;
+}
+
+export { extractReferences };
+</file>
+
+<file path="src/domains/semantic/detectors/inferModifiers.js">
+export function inferModifiers(text = "") {
+  const modifiers = [];
+
+  const normalized = text.toLowerCase();
+
+  // =====================================================
+  // SIN ...
+  // =====================================================
+
+  const regexSin = /\bsin\s+([a-záéíóúñ]+(?:\s+ni\s+[a-záéíóúñ]+)*)/gi;
+
+  let match;
+
+  while ((match = regexSin.exec(normalized)) !== null) {
+    const ingredientes = match[1]
+      .split(/\s+ni\s+/i)
+      .map((v) => v.trim())
+      .filter(Boolean);
+
+    ingredientes.forEach((ingrediente) => {
+      modifiers.push({
+        type: "REMOVE_INGREDIENT",
+        value: ingrediente,
+        raw: `sin ${ingrediente}`,
+      });
+    });
+  }
+
+  // =====================================================
+  // CON ...
+  // =====================================================
+
+  const regexCon = /\bcon\s+([a-záéíóúñ\s]+)/gi;
+
+  while ((match = regexCon.exec(normalized)) !== null) {
+    modifiers.push({
+      type: "ADD_INGREDIENT",
+      value: match[1].trim(),
+      raw: match[0],
+    });
+  }
+
+  // =====================================================
+  // EXTRA ...
+  // =====================================================
+
+  const regexExtra = /\bextra\s+([a-záéíóúñ\s]+)/gi;
+
+  while ((match = regexExtra.exec(normalized)) !== null) {
+    modifiers.push({
+      type: "EXTRA_INGREDIENT",
+      value: match[1].trim(),
+      raw: match[0],
+    });
+  }
+
+  return modifiers;
+}
+</file>
+
+<file path="src/domains/semantic/detectors/resolveContextReference.js">
+/**
+ * Resuelve referencias conversacionales:
+ * "la misma"
+ * "otro igual"
+ * "el primero"
+ * etc.
+ */
+
+export function resolveContextReference({
+    text,
+    cart,
+    menuMap = []
+}) {
+
+    const normalized = text.toLowerCase();
+
+    // Último producto discutido
+    const lastProduct =
+        cart?.tempData?.lastProductDiscussed;
+
+    // Productos actuales del carrito
+    const cartItems =
+        cart?.items || [];
+
+    // =====================================================
+    // REFERENCIAS A ÚLTIMO PRODUCTO
+    // =====================================================
+
+    const sameProductPatterns = [
+        'la misma',
+        'lo mismo',
+        'igual',
+        'otro igual',
+        'la misma otra vez'
+    ];
+
+    const matchedSame =
+        sameProductPatterns.some(
+            pattern => normalized.includes(pattern)
+        );
+
+    if (matchedSame && lastProduct) {
+
+        return {
+            type: 'LAST_PRODUCT',
+            productName: lastProduct
+        };
+    }
+
+    // =====================================================
+    // REFERENCIAS ORDINALES
+    // =====================================================
+
+    if (normalized.includes('el primero')) {
+
+        if (cartItems[0]) {
+            return {
+                type: 'CART_POSITION',
+                productName: cartItems[0].productName
+            };
+        }
+    }
+
+    if (normalized.includes('el segundo')) {
+
+        if (cartItems[1]) {
+            return {
+                type: 'CART_POSITION',
+                productName: cartItems[1].productName
+            };
+        }
+    }
+
+    return null;
+}
+</file>
+
+<file path="src/domains/semantic/engine/executeSemanticOperations.js">
+/**
+ * Convierte operaciones semánticas
+ * en acciones compatibles con processCartActions.
+ */
+
+export async function executeSemanticOperations({
+  operations = [],
+  modifiers = [],
+  menuMap = [],
+}) {
+  const items = [];
+
+  console.log(
+    "[SemanticExecutor] Modifiers recibidos:",
+    JSON.stringify(modifiers, null, 2),
+  );
+
+  for (const operation of operations) {
+    if (operation.type !== "ADD_ITEM") {
+      continue;
+    }
+
+    let menuItem = null;
+
+    // =====================================================
+    // REFERENCIA POR ÍNDICE
+    // =====================================================
+
+    if (operation.reference?.type === "menu_index") {
+      const menuIndex = operation.reference.value;
+
+      menuItem = menuMap.find((item) => item.index === menuIndex);
+    }
+
+    // =====================================================
+    // REFERENCIA POR NOMBRE
+    // =====================================================
+
+    if (operation.reference?.type === "product_name") {
+      menuItem = menuMap.find(
+        (item) => item.nombre === operation.reference.value,
+      );
+    }
+
+    if (!menuItem) {
+      continue;
+    }
+
+    const notes = (operation.modifiers || []).map((m) => m.raw).join(", ");
+
+    console.log(
+      "[SemanticExecutor] Modifiers asignados:",
+      operation.modifiers || [],
+    );
+
+    console.log("[SemanticExecutor] Item construido:", {
+      action: "add",
+      productName: menuItem.nombre,
+      quantity: operation.quantity,
+      modifiers,
+      notes,
+    });
+
+    items.push({
+      action: "add",
+
+      productName: menuItem.nombre,
+
+      quantity: operation.quantity || 1,
+
+      modifiers: operation.modifiers || [],
+
+      notes,
+    });
+  }
+
+  return items;
+}
+</file>
+
+<file path="src/domains/semantic/indexers/buildSemanticMenuIndex.js">
+import { normalizeText } from "../utils/normalizeText.js";
+
+const STOPWORDS = ["de", "la", "el", "con", "y", "del"];
+
+export function buildSemanticMenuIndex(menuMap = []) {
+  const tokenFrequency = new Map();
+
+  const tokenIndex = new Map();
+
+  const semanticGroups = new Map();
+
+  const products = [];
+
+  for (const item of menuMap) {
+    const normalizedName = normalizeText(item.nombre);
+
+    const tokens = normalizedName
+      .split(" ")
+      .filter((token) => token.length > 2 && !STOPWORDS.includes(token));
+
+    // =========================================
+    // TOKEN FREQUENCY
+    // =========================================
+
+    for (const token of tokens) {
+      tokenFrequency.set(token, (tokenFrequency.get(token) || 0) + 1);
+
+      if (!tokenIndex.has(token)) {
+        tokenIndex.set(token, []);
+      }
+
+      tokenIndex.get(token).push(item.id);
+    }
+
+    products.push({
+      id: item.id,
+      nombre: item.nombre,
+      normalizedName,
+      tokens,
+      original: item,
+    });
+  }
+
+  // =========================================
+  // SEMANTIC GROUP DETECTION
+  // =========================================
+
+  for (const product of products) {
+    let bestGroup = null;
+
+    let bestFrequency = 0;
+
+    for (const token of product.tokens) {
+      const frequency = tokenFrequency.get(token);
+
+      if (frequency > bestFrequency) {
+        bestFrequency = frequency;
+        bestGroup = token;
+      }
+    }
+
+    product.semanticGroup = bestGroup;
+
+    if (!semanticGroups.has(bestGroup)) {
+      semanticGroups.set(bestGroup, []);
+    }
+
+    semanticGroups.get(bestGroup).push(product);
+  }
+
+  return {
+    products,
+
+    tokenFrequency,
+
+    tokenIndex,
+
+    semanticGroups,
+  };
+}
+</file>
+
+<file path="src/domains/semantic/parsers/entityBinder.js">
+import { detectProductReferences } from "../detectors/detectProductReferences.js";
+import { rankProductCandidates } from "../ranking/rankProductCandidates.js";
+
+/**
+ * Entity Binder
+ * Convierte segmentos en entidades estructuradas de pedido
+ */
+
+export function bindEntities({ segments = [], menuMap = [] }) {
+  if (!Array.isArray(segments)) return [];
+
+  const entities = [];
+
+  for (const segment of segments) {
+    if (!segment) continue;
+
+    const { product, modifiers, quantity } = extractEntity(segment, menuMap);
+
+    if (product) {
+      entities.push({
+        product,
+        quantity,
+        modifiers,
+        notes: "",
+      });
+    }
+  }
+
+  return entities;
+}
+
+/**
+ * Extrae producto + cantidad + modifiers desde un segmento
+ */
+function extractEntity(segment, menuMap) {
+  const normalized = segment.toLowerCase();
+
+  // 1. detectar candidatos de producto
+  let candidates = [];
+
+  try {
+    candidates = detectProductReferences({
+      text: normalized,
+      menuMap,
+    });
+  } catch (err) {
+    candidates = [];
+  }
+
+  const ranking = safeRank(candidates);
+
+  const product = resolveProduct(ranking);
+
+  // 2. cantidad
+  const quantity = extractQuantity(normalized);
+
+  // 3. modifiers
+  const modifiers = extractModifiers(normalized);
+
+  return {
+    product,
+    quantity,
+    modifiers,
+  };
+}
+
+/**
+ * Resolver mejor producto
+ */
+function resolveProduct(ranking) {
+  if (!ranking?.topCandidates?.length) return null;
+
+  const top = ranking.topCandidates[0];
+
+  return top?.value || null;
+}
+
+/**
+ * Ranking seguro
+ */
+function safeRank(candidates) {
+  try {
+    return rankProductCandidates({ candidates });
+  } catch {
+    return { topCandidates: [] };
+  }
+}
+
+/**
+ * Detecta cantidades: "2 hamburguesas"
+ */
+function extractQuantity(text) {
+  const match = text.match(/\b(\d+)\b/);
+  return match ? parseInt(match[1]) : 1;
+}
+
+/**
+ * Detecta modifiers simples
+ */
+function extractModifiers(text) {
+  const modifiers = [];
+
+  const rules = [
+    /sin\s+([a-záéíóúñ]+)/g,
+    /con\s+([a-záéíóúñ]+)/g,
+    /extra\s+([a-záéíóúñ]+)/g,
+  ];
+
+  for (const rule of rules) {
+    let match;
+    while ((match = rule.exec(text)) !== null) {
+      modifiers.push(`${match[0]}`);
+    }
+  }
+
+  return modifiers;
+}
+</file>
+
+<file path="src/domains/semantic/parsers/inferOperations.js">
+/**
+ * Detecta operaciones conversacionales estructuradas.
+ */
+
+const NUMBER_WORDS = {
+  un: 1,
+  una: 1,
+  uno: 1,
+
+  dos: 2,
+  tres: 3,
+  cuatro: 4,
+  cinco: 5,
+  seis: 6,
+  siete: 7,
+  ocho: 8,
+  nueve: 9,
+  diez: 10,
+};
+
+function inferOperations(text = "", references = []) {
+  const operations = [];
+
+  const normalized = text.toLowerCase();
+
+  let match;
+
+  const semanticText = normalized.replace(
+    /\b(un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/gi,
+    (match) => NUMBER_WORDS[match.toLowerCase()] || match,
+  );
+  // =====================================================
+  // 1. OPERACIONES POR ÍNDICE
+  // =====================================================
+
+  /**
+   * 2 de la 3
+   */
+
+  const regexCantidadReferencia = /(\d+)\s+de\s+(?:la|el)?\s*(\d+)/gi;
+
+  while ((match = regexCantidadReferencia.exec(semanticText)) !== null) {
+    operations.push({
+      type: "ADD_ITEM",
+
+      quantity: Number(match[1]),
+
+      reference: {
+        type: "menu_index",
+        value: Number(match[2]),
+      },
+
+      raw: match[0],
+    });
+  }
+
+  /**
+   * 3x la 2
+   */
+
+  const regexMultiplicador = /(\d+)x\s*(?:la|el)?\s*(\d+)/gi;
+
+  while ((match = regexMultiplicador.exec(semanticText)) !== null) {
+    operations.push({
+      type: "ADD_ITEM",
+
+      quantity: Number(match[1]),
+
+      reference: {
+        type: "menu_index",
+        value: Number(match[2]),
+      },
+
+      raw: match[0],
+    });
+  }
+
+  // =====================================================
+  // 2. PRODUCTOS DETECTADOS POR NOMBRE
+  // =====================================================
+
+  const productReferences = references.filter(
+    (ref) => ref.type === "PRODUCT_NAME",
+  );
+
+  for (const productRef of productReferences) {
+    // Intentar detectar cantidad cercana
+
+    let quantity = 1;
+
+    const escapedName = productRef.value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    const normalizedProduct = productRef.value.toLowerCase().replace(/-/g, " ");
+
+    const semanticTokens = normalizedProduct
+      .split(" ")
+      .filter((word) => word.length > 2);
+
+    const primaryToken = semanticTokens[0];
+
+    const regexCantidadProducto = new RegExp(
+      `(\\d+)\\s*(?:x)?\\s*(?:de)?\\s*${primaryToken}s?`,
+      "i",
+    );
+
+    const quantityMatch = semanticText.match(regexCantidadProducto);
+
+    if (quantityMatch) {
+      quantity = Number(quantityMatch[1]);
+    }
+
+    operations.push({
+      type: "ADD_ITEM",
+
+      quantity,
+
+      reference: {
+        type: "product_name",
+        value: productRef.value,
+      },
+
+      raw: productRef.value,
+    });
+  }
+
+  return operations;
+}
+
+export { inferOperations };
+</file>
+
+<file path="src/domains/semantic/parsers/intentSegmenter.js">
+/**
+ * Intent Segmenter
+ * Divide un texto en "intents de pedido" independientes
+ */
+
+export function segmentIntents(text = "") {
+  if (!text || typeof text !== "string") return [];
+
+  let clean = text.toLowerCase();
+
+  // Normalizar separadores naturales del lenguaje
+  clean = clean
+    .replace(/\sy\s/g, " , ") // "y" como separador
+    .replace(/\s+y\s+/g, " , ")
+    .replace(/\s*,\s*/g, " , ")
+    .replace(/\s+y\s+ah\s+y\s+/g, " , ")
+    .replace(/\s+ah\s+y\s+/g, " , ");
+
+  // Separar por comas artificiales
+  let rawSegments = clean
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  // Limpieza de segmentos
+  const segments = rawSegments.map(normalizeSegment);
+
+  // Filtrar basura
+  return segments.filter(isValidSegment);
+}
+
+/**
+ * Limpia cada segmento individual
+ */
+function normalizeSegment(segment) {
+  return segment
+    .replace(/^(quiero|dame|ponme|agrega|agregar|una|un)\s+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Filtra segmentos inútiles
+ */
+function isValidSegment(segment) {
+  if (!segment) return false;
+  if (segment.length < 2) return false;
+
+  // filtrar solo palabras vacías
+  const junk = ["ok", "si", "hola", "buenas", "gracias"];
+  if (junk.includes(segment)) return false;
+
+  return true;
+}
+</file>
+
+<file path="src/domains/semantic/parsers/semanticChunker.js">
+export function splitSemanticChunks(text = "") {
+  const normalized = text
+    .replace(/\s+y\s+/gi, " | ")
+    .replace(/\s+con\s+/gi, " | ")
+    .replace(/\s*,\s*/g, " | ");
+
+  return normalized
+    .split("|")
+    .map((chunk) => chunk.trim())
+    .filter(Boolean);
+}
+</file>
+
+<file path="src/domains/semantic/ranking/rankProductCandidates.js">
+export function rankProductCandidates({ text, candidates = [] }) {
+  if (!candidates.length) {
+    return [];
+  }
+
+  const sorted = [...candidates].sort((a, b) => b.score - a.score);
+
+  const bestScore = sorted[0]?.score || 0;
+
+  const topCandidates = sorted.filter(
+    (candidate) => candidate.score >= bestScore - 0.15,
+  );
+
+  return {
+    bestScore,
+    topCandidates,
+    ranked: sorted,
+  };
+}
+</file>
+
+<file path="src/domains/semantic/utils/normalizeText.js">
+// src/domains/semantic/normalizeText.js
+
+/**
+ * Normaliza texto conversacional SIN destruir significado.
+ *
+ * Objetivos:
+ * - lowercase
+ * - remover acentos
+ * - limpiar espacios
+ * - mantener números y contexto
+ *
+ * IMPORTANTE:
+ * NO modificar intención semántica.
+ */
+
+function normalizeText(text = '') {
+    return text
+        .toString()
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+export {
+    normalizeText
+};
+</file>
+
+<file path="src/domains/semanticEngine.js">
+import { extractReferences } from "./semantic/detectors/extractReferences.js";
+import { detectProductReferences } from "./semantic/detectors/detectProductReferences.js";
+import { inferOperations } from "./semantic/parsers/inferOperations.js";
+import { resolveContextReference } from "./semantic/detectors/resolveContextReference.js";
+import { executeSemanticOperations } from "./semantic/engine/executeSemanticOperations.js";
+import { rankProductCandidates } from "./semantic/ranking/rankProductCandidates.js";
+
+import { segmentIntents } from "./semantic/parsers/intentSegmenter.js";
+import { bindEntities } from "./semantic/parsers/entityBinder.js";
+
+// -----------------------------
+const safeArray = (v) => (Array.isArray(v) ? v : []);
+const safeString = (v) => (typeof v === "string" ? v : "");
+const safeObject = (v) => (v && typeof v === "object" ? v : {});
+
+// -----------------------------
+export async function processSemanticMessage({
+  text = "",
+  menuMap = [],
+  cart = {},
+}) {
+  const safeText = safeString(text);
+
+  const safeMenuMap =
+    Array.isArray(menuMap) && menuMap.length > 0
+      ? menuMap
+      : Array.isArray(cart?.tempData?.menuMap)
+        ? cart.tempData.menuMap
+        : [];
+
+  // =====================================================
+  // 1. INTENT SEGMENTATION (NUEVO CORE)
+  // =====================================================
+  const segments = segmentIntents(safeText);
+
+  // =====================================================
+  // 2. ENTITY BINDING (OPCIONAL FUTURO)
+  // =====================================================
+  const entities = bindEntities({
+    segments,
+    menuMap: safeMenuMap,
+  });
+
+  let operations = [];
+  let references = [];
+
+  // =====================================================
+  // 3. PROCESS EACH SEGMENT
+  // =====================================================
+  for (const chunk of segments) {
+    if (!chunk) continue;
+
+    const chunkLower = chunk.toLowerCase();
+
+    let chunkIndexReferences = [];
+
+    try {
+      chunkIndexReferences = safeArray(extractReferences(chunk));
+    } catch (err) {}
+
+    let productCandidates = [];
+
+    try {
+      productCandidates = detectProductReferences({
+        text: chunk,
+        menuMap: safeMenuMap,
+      });
+    } catch (err) {}
+
+    let ranking = { topCandidates: [] };
+
+    try {
+      const rankingRaw = rankProductCandidates({
+        candidates: safeArray(productCandidates),
+      });
+
+      ranking = {
+        topCandidates: safeArray(rankingRaw?.topCandidates),
+      };
+    } catch (err) {}
+
+    // REFERENCES
+    if (ranking.topCandidates.length === 1) {
+      const winner = ranking.topCandidates[0];
+
+      references.push({
+        type: "PRODUCT_NAME",
+        value: winner.value,
+        score: winner.score,
+      });
+    }
+
+    if (ranking.topCandidates.length > 1) {
+      references.push({
+        type: "AMBIGUOUS_PRODUCT",
+        query: chunk,
+        candidates: ranking.topCandidates,
+      });
+    }
+
+    // OPERATIONS
+    let chunkOperations = [];
+
+    try {
+      chunkOperations = safeArray(inferOperations(chunk, chunkIndexReferences));
+    } catch (err) {}
+
+    operations.push(...chunkOperations);
+    references.push(...chunkIndexReferences);
+  }
+
+  // =====================================================
+  // 4. CONTEXT
+  // =====================================================
+  let contextReference = null;
+
+  try {
+    contextReference = resolveContextReference({
+      text: safeText,
+      cart: safeObject(cart),
+      menuMap: safeMenuMap,
+    });
+  } catch (err) {}
+
+  // =====================================================
+  // 5. EXECUTION
+  // =====================================================
+  let semanticItems = [];
+
+  try {
+    const result = await executeSemanticOperations({
+      operations: safeArray(operations),
+      menuMap: safeMenuMap,
+    });
+
+    semanticItems = safeArray(result);
+  } catch (err) {}
+
+  // =====================================================
+  // 6. CONTEXT FALLBACK
+  // =====================================================
+  if (semanticItems.length === 0 && contextReference?.productName) {
+    semanticItems = [
+      {
+        action: "add",
+        productName: contextReference.productName,
+        quantity: 1,
+      },
+    ];
+  }
+
+  return {
+    semanticItems,
+    operations,
+    references,
+    contextReference,
+    entities,
+  };
+}
 </file>
 
 <file path="src/middleware/auth.middleware.js">
@@ -385,248 +1213,62 @@ const crearAdminInicial = async () => {
 crearAdminInicial();
 </file>
 
-<file path="src/services/businessRules.js">
-// src/services/businessRules.js
-
-export const applyInference = (extractedData, currentTempData) => {
-    if (!extractedData) return currentTempData;
-
-    const { nombre, direccion, metodoPago, modoEntrega, notasPago, notasCocina } = extractedData;
-    const clean = (val) => (val && val !== 'null' && val !== 'undefined') ? val.trim() : null;
-
-    const dirLimpia = clean(direccion);
-    let modoLimpio = clean(modoEntrega);
-    let pagoLimpio = clean(metodoPago);
-
-    // 📍 Inferencia de Entrega
-    // 🌟 MEJORA: Si la dirección parece una instrucción de Recoger
-    if (dirLimpia && (dirLimpia.toLowerCase().includes('recoger') || dirLimpia.toLowerCase().includes('tienda'))) {
-        console.log("-> Inferencia: El usuario quiere recoger, no es una dirección.");
-        modoLimpio = 'PICKUP';
-        dirLimpia = 'RECOGIDA EN TIENDA'; // Limpiamos el texto basura
-    }
-    // 💳 Inferencia de Pago
-    const notas = [clean(notasPago || notasPago), clean(notasCocina)].filter(Boolean).join(' ').toLowerCase();
-    if (!pagoLimpio) {
-        if (notas.includes('billete') || notas.includes('cambio') || notas.includes('efectivo')) pagoLimpio = 'Efectivo';
-        else if (notas.includes('tarjeta') || notas.includes('terminal')) pagoLimpio = 'Tarjeta';
-    }
-
-    // 🌟 REGLA DE ORO: No sobrescribir lo que el usuario borró manualmente
-    return {
-        ...currentTempData, // Mantenemos el historial y otros campos
-        name: clean(nombre) || currentTempData.name,
-        address: dirLimpia || currentTempData.address,
-        deliveryMode: modoLimpio || currentTempData.deliveryMode,
-        paymentMethod: pagoLimpio ? (pagoLimpio.charAt(0).toUpperCase() + pagoLimpio.slice(1).toLowerCase()) : currentTempData.paymentMethod,
-        orderNotes: notas || currentTempData.orderNotes
-    };
-};
-</file>
-
 <file path="src/services/cartService.js">
 // src/services/cartService.js
-import { getOrCreateCart, updateCart, addItemToCart, removeItemsByName } from '../whatsapp/cartUtils.js';
-import { validarPedido } from './orderValidator.js';
+import {
+  getOrCreateCart,
+  updateCart,
+  addItemToCart,
+  removeItemsByName,
+} from "../whatsapp/cartUtils.js";
+import { validarPedido } from "./orderValidator.js";
 
 /**
  * Procesa una lista de intenciones (ADD/REMOVE) y actualiza el carrito real.
  * @returns {Object} { cart, alerts } - El carrito actualizado y notas de stock si hubo problemas.
  */
 export const processCartActions = async (userId, businessId, items) => {
-    let alerts = "";
-    
-    if (!items || items.length === 0) {
-        const cart = await getOrCreateCart(userId, businessId);
-        return { cart, alerts };
-    }
+  let alerts = "";
 
-    for (const item of items) {
-        if (item.action === 'REMOVE') {
-            console.log(`[cartService] 🗑️ Removiendo: ${item.productName}`);
-            await removeItemsByName(userId, businessId, item.productName);
-        } 
-        else {
-            console.log(`[cartService] ➕ Intentando añadir: ${item.productName}`);
-            // Validamos existencia en el catálogo y precios
-            const { itemsValidados } = await validarPedido([item], businessId);
-            
-            if (itemsValidados && itemsValidados.length > 0) {
-                // Intentamos meter al almacén (aquí se valida el stock real)
-                const resStock = await addItemToCart(userId, businessId, itemsValidados[0]);
-                
-                if (!resStock.success && resStock.reason === 'SIN_STOCK') {
-                    alerts += resStock.disponible > 0 
-                        ? `\n\n⚠️ *Nota:* De ${resStock.name} solo quedan ${resStock.disponible} unidades. Por ahora no lo agregué.` 
-                        : `\n\n⚠️ *Nota:* Lo sentimos, ${resStock.name} se ha agotado por hoy.`;
-                }
-            }
+  if (!items || items.length === 0) {
+    const cart = await getOrCreateCart(userId, businessId);
+    return { cart, alerts };
+  }
+
+  for (const item of items) {
+    if (item.action === "REMOVE") {
+      console.log(`[cartService] 🗑️ Removiendo: ${item.productName}`);
+      await removeItemsByName(userId, businessId, item.productName);
+    } else {
+      console.log(`[cartService] ➕ Intentando añadir: ${item.productName}`);
+      // Validamos existencia en el catálogo y precios
+      console.log(
+        "[cartService] Item completo:",
+        JSON.stringify(item, null, 2),
+      );
+      const { itemsValidados } = await validarPedido([item], businessId);
+
+      if (itemsValidados && itemsValidados.length > 0) {
+        // Intentamos meter al almacén (aquí se valida el stock real)
+        const resStock = await addItemToCart(
+          userId,
+          businessId,
+          itemsValidados[0],
+        );
+
+        if (!resStock.success && resStock.reason === "SIN_STOCK") {
+          alerts +=
+            resStock.disponible > 0
+              ? `\n\n⚠️ *Nota:* De ${resStock.name} solo quedan ${resStock.disponible} unidades. Por ahora no lo agregué.`
+              : `\n\n⚠️ *Nota:* Lo sentimos, ${resStock.name} se ha agotado por hoy.`;
         }
+      }
     }
+  }
 
-    // Refrescamos el carrito una sola vez al finalizar todas las operaciones
-    const finalCart = await getOrCreateCart(userId, businessId);
-    return { cart: finalCart, alerts };
-};
-</file>
-
-<file path="src/services/flowService.js">
-// src/services/flowService.js
-import { getUltimoPedido, generarPropuestaVIP } from './loyaltyService.js';
-import { sendMenu } from '../whatsapp/utils.js';
-import { sendWhatsAppNotification } from './notifyService.js';
-import { updateCart } from '../whatsapp/cartUtils.js';
-
-const SALUDOS = ['HOLA', 'OLA', 'GOLA', 'BUENAS', 'BUENOS', 'DIAS', 'TARDES', 'NOCHES', 'INFO', 'ESTAN', 'VENDIENDO', 'MENU', 'MENÚ', 'HAY'];
-const CORTESIA = ['GRACIAS', 'OK', 'DALE', 'ESTA BIEN', 'ENTENDIDO', 'PERFECTO', 'LISTO', '👍', 'BYE', 'ADIOS', 'EXCELENTE', 'MUCHAS GRACIAS', 'YA QUEDO'];
-const FEEDBACK_NEGATIVO = ['FALTO', 'FALTA', 'MALO', 'FRIO', 'SALSA', 'TARDE', 'EQUIVOCADO', 'ERROR', 'NO LLEGO', 'POCA', 'POCO'];
-
-export const handleInitialFlow = async (userId, businessId, text, cart, auth, lastOrder = null) => {
-    const normalizedText = text.toUpperCase().trim();
-    const currentState = cart.conversationState;
-    const history = cart.tempData.history || [];
-
-    // 🛡️ 1. DETECTOR DE QUEJAS
-    const esQueja = FEEDBACK_NEGATIVO.some(k => normalizedText.includes(k));
-    if (esQueja && lastOrder && currentState === 'POST_VENTA') {
-        const disculpa = `Lamento mucho el inconveniente con tu pedido *#${lastOrder.numero_pedido}*, ${lastOrder.nombreCliente}. 😔\n\nHe reportado tu mensaje sobre "${text}" al equipo para que lo revisen ahora mismo. ¿Puedo ayudarte con algo más?`;
-        await sendWhatsAppNotification(userId, disculpa, auth);
-        return true;
-    }
-    
-    // 💰 2. FILTRO DE CORTESÍA (Ahorro IA)
-    const esCortesia = CORTESIA.includes(normalizedText);
-    const esEmoji = (text.length <= 2 && /[\u{1F300}-\u{1F9FF}]/u.test(text));
-
-    if (esCortesia || esEmoji) {
-        let respuesta = "¡Con gusto! Quedo pendiente de tu pedido. 😊";
-        if (lastOrder) {
-            respuesta = (lastOrder.estado === 'Pendiente de Pago') 
-                ? `¡De nada! Sigo a la espera de tu comprobante para procesar la orden *#${lastOrder.numero_pedido}*. 📸`
-                : `¡Un placer! Tu orden *#${lastOrder.numero_pedido}* ya está en proceso. 👨‍🍳`;
-        }
-        await sendWhatsAppNotification(userId, respuesta, auth);
-        return true; 
-    }
-
-    // 🕒 3. MANEJO DE SEGUIMIENTO / COMPROBANTE
-    if (lastOrder && text.length < 40) {
-        const lowerText = text.toLowerCase();
-        const keywordsStatus = ['donde', 'viene', 'estatus', 'pedido', 'orden', 'va', 'falta', 'confirmar', 'llega', 'tarda'];
-        if (keywordsStatus.some(k => lowerText.includes(k))) {
-            let statusMsg = `Tu pedido *#${lastOrder.numero_pedido}* está: *${lastOrder.estado}*.\n\n`;
-            statusMsg += (lastOrder.estado === 'Pendiente de Pago') 
-                ? "Recuerda enviarme la foto de tu comprobante para cocinar. 📸"
-                : "Te avisaremos por aquí cualquier actualización. 🛵";
-            await sendWhatsAppNotification(userId, statusMsg, auth);
-            return true;
-        }
-
-        if (currentState === 'ESPERANDO_COMPROBANTE' && text.length < 20 && !lowerText.includes('menu')) {
-            const reminderMsg = `He recibido tu mensaje, pero aún necesito la *foto del comprobante* 📸 para validar tu pago del pedido *#${lastOrder.numero_pedido}*.\n\n_Si quieres pedir algo nuevo, escribe *MENÚ*._`;
-            await sendWhatsAppNotification(userId, reminderMsg, auth);
-            return true;
-        }
-    }
-
-    // 🤝 4. REINICIO DE CONVERSACIÓN (VIP / MENÚ)
-    const esSaludo = SALUDOS.some(s => normalizedText.includes(s));
-    const esMensajeCorto = text.length < 10;
-    
-    // 🌟 REGLA DE ORO (FIX CLIENTE 1):
-    // Solo permitimos el flujo de bienvenida si el estado es 'INICIO' o 'POST_VENTA'.
-    // Si el estado es 'MOSTRANDO_MENU' o cualquier otro, ignoramos este bloque para no ciclar al cliente.
-    const estadosDeBienvenida = ['INICIO', 'POST_VENTA'];
-    const esEstadoInicialValido = estadosDeBienvenida.includes(currentState);
-
-    if (cart.items.length === 0 && esEstadoInicialValido && (esMensajeCorto || esSaludo)) {
-        console.log(`[flowService] 👋 Manejando inicio legal (Estado: ${currentState}).`);
-        
-        const ultimo = await getUltimoPedido(userId, businessId);
-        const propuesta = generarPropuestaVIP(ultimo);
-
-        if (propuesta && currentState !== 'PROPUESTA_VIP') {
-            await updateCart(userId, businessId, { conversationState: 'PROPUESTA_VIP' });
-            await sendWhatsAppNotification(userId, {
-                type: "interactive",
-                interactive: {
-                    type: "button",
-                    body: { text: propuesta.texto },
-                    action: {
-                        buttons: [
-                            { type: "reply", reply: { id: "REPETIR_PEDIDO", title: "✅ Sí, lo mismo" } },
-                            { type: "reply", reply: { id: "MENU_NUEVO", title: "📋 Ver Menú" } }
-                        ]
-                    }
-                }
-            }, auth);
-            return true;
-        }
-
-        // Si no hay pedido anterior o ya pasó el filtro, mandamos menú y CAMBIAMOS ESTADO
-        await updateCart(userId, businessId, { conversationState: 'MOSTRANDO_MENU' });
-        await sendMenu(userId, businessId, auth, cart);
-        return true;
-    }
-
-    return false; // Pasar a Mateo IA
-};
-</file>
-
-<file path="src/services/notifyService.js">
-// src/services/notifyService.js
-import { sendMessage } from '../whatsapp/utils.js';
-
-export const sendWhatsAppNotification = async (userId, payload, auth) => {
-    try {
-        await sendMessage(userId, payload, auth);
-        console.log(`✅ [notifyService] WhatsApp enviado a ${userId}`);
-    } catch (error) {
-        console.error(`❌ [notifyService] Error WhatsApp:`, error.message);
-    }
-};
-
-export const notifyDashboard = (businessId, pedido) => {
-    if (!global.io) {
-        console.error("⚠️ [notifyService] Socket.io no detectado en el espacio global.");
-        return;
-    }
-    try {
-        const salaId = businessId.toString();
-        const dataFinal = JSON.parse(JSON.stringify(pedido));
-        global.io.to(salaId).emit('NUEVO_PEDIDO', dataFinal);
-        console.log(`📢 [notifyService] Dashboard notificado en sala: ${salaId}`);
-    } catch (error) {
-        console.error(`❌ [notifyService] Error Socket:`, error.message);
-    }
-};
-
-/**
- * 🌟 LÓGICA TOP-TIER: Notificación inteligente de cambio de estado
- * Diferencia entre recoger en tienda y envío a domicilio.
- */
-export const notifyOrderStatusUpdate = async (pedido, nuevoEstado, auth) => {
-    if (!pedido.telefonoCliente || pedido.telefonoCliente === 'MOSTRADOR') return;
-
-    let mensaje = "";
-    const n = pedido.numero_pedido;
-    const esPickup = pedido.entregaMode === 'PICKUP';
-
-    if (nuevoEstado === 'Confirmado') {
-        mensaje = `✅ *¡Hola ${pedido.nombreCliente}!* Tu pedido #${n} ha sido confirmado y ya entró a cocina. 👨‍🍳`;
-    } 
-    else if (nuevoEstado === 'En Camino') {
-        mensaje = esPickup 
-            ? `🛍️ *¡Tu pedido #${n} ya está listo!* Puedes pasar por él a nuestra sucursal. ¡Te esperamos!`
-            : `🛵 *¡Buenas noticias!* Tu pedido #${n} ya salió de cocina y va en camino a tu dirección.`;
-    } 
-    else if (nuevoEstado === 'Entregado') {
-        mensaje = `🌟 *¡Pedido entregado!* Muchas gracias por tu compra, ${pedido.nombreCliente}. ¡Que lo disfrutes!`;
-    }
-
-    if (mensaje) {
-        await sendWhatsAppNotification(pedido.telefonoCliente, mensaje, auth);
-    }
+  // Refrescamos el carrito una sola vez al finalizar todas las operaciones
+  const finalCart = await getOrCreateCart(userId, businessId);
+  return { cart: finalCart, alerts };
 };
 </file>
 
@@ -691,6 +1333,58 @@ export const getTransferDetailsMessage = async () => {
 };
 </file>
 
+<file path="src/services/securityService.js">
+// src/services/securityService.js
+import { connection as redis } from '../config/redis.js';
+import logger from '../utils/logger.js';
+
+/**
+ * Algoritmo: Fixed Window Counter
+ * Propósito: Blindar el sistema contra spam y ataques de denegación de servicio (DDoS)
+ */
+export const checkRateLimit = async (userId, businessId) => {
+    // Definimos los límites (Configurables vía .env en el futuro)
+    const USER_LIMIT = 10;      // 10 mensajes por minuto por usuario
+    const BUSINESS_LIMIT = 100; // 100 mensajes por minuto por restaurante (SaaS Guard)
+    const WINDOW = 60;          // Ventana de 60 segundos
+
+    const userKey = `ratelimit:user:${userId}`;
+    const businessKey = `ratelimit:biz:${businessId}`;
+
+    try {
+        // Ejecutamos ambas validaciones en paralelo para optimizar latencia
+        const [userCount, bizCount] = await Promise.all([
+            redis.incr(userKey),
+            redis.incr(businessKey)
+        ]);
+
+        // Si es el primer mensaje de la ventana, establecemos expiración
+        if (userCount === 1) await redis.expire(userKey, WINDOW);
+        if (bizCount === 1) await redis.expire(businessKey, WINDOW);
+
+        // 1. Validación de Usuario
+        if (userCount > USER_LIMIT) {
+            logger.warn(`🚫 [Security] Rate limit excedido por usuario: ${userId}`, { userId, count: userCount });
+            return { allowed: false, reason: 'USER_SPAM' };
+        }
+
+        // 2. Validación de Negocio (Protección Multi-tenant)
+        if (bizCount > BUSINESS_LIMIT) {
+            logger.error(`🚨 [Security] Pico de tráfico detectado en Negocio: ${businessId}. Bloqueando preventivamente.`);
+            return { allowed: false, reason: 'BUSINESS_OVERLOAD' };
+        }
+
+        return { allowed: true };
+
+    } catch (error) {
+        // Principio de Disponibilidad: Si Redis falla, dejamos pasar el mensaje
+        // para no dejar al cliente colgado, pero alertamos en logs.
+        logger.error(`⚠️ [Security] Error en Rate Limiter, permitiendo por bypass: ${error.message}`);
+        return { allowed: true };
+    }
+};
+</file>
+
 <file path="src/utils/cryptoUtils.js">
 import crypto from 'crypto';
 
@@ -719,43 +1413,48 @@ export const decrypt = (text) => {
 
 <file path="src/utils/dateUtils.js">
 // src/utils/dateUtils.js
-import { DateTime } from 'luxon'; // Si no tienes luxon: npm install luxon
+import { DateTime } from "luxon"; // Si no tienes luxon: npm install luxon
+import { normalizeText } from "../domains/semantic/utils/normalizeText.js";
 
 export const verificarDisponibilidad = (restaurante) => {
-    const { horarios, mensajeCerrado } = restaurante.configuracion;
-    
-    // 1. Obtener hora actual en la zona horaria del negocio
-    // Es vital fijar la zona horaria para que no dependa del servidor (Heroku/AWS)
-    const ahora = DateTime.now().setZone('America/Mexico_City'); 
-    
-    // Normalizamos el día de la semana para que coincida con tu DB (LUNES, MARTES...)
-    const diasMapa = {
-        1: 'LUNES', 2: 'MARTES', 3: 'MIÉRCOLES', 4: 'JUEVES', 
-        5: 'VIERNES', 6: 'SÁBADO', 7: 'DOMINGO'
-    };
-    const diaActual = diasMapa[ahora.weekday];
-    const horaActualStr = ahora.toFormat('HH:mm');
+  const { horarios, mensajeCerrado } = restaurante.configuracion;
 
-    // 2. Buscar la configuración de hoy
-    // Usamos normalize para ignorar tildes en la comparación por seguridad
-    const configHoy = horarios.find(h => 
-        h.dia.normalize("NFD").replace(/[\u0300-\u036f]/g, "") === 
-        diaActual.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    );
+  // 1. Obtener hora actual en la zona horaria del negocio
+  // Es vital fijar la zona horaria para que no dependa del servidor (Heroku/AWS)
+  const ahora = DateTime.now().setZone("America/Mexico_City");
 
-    // 3. Validar si el día está activo
-    if (!configHoy || !configHoy.activo) {
-        return { abierto: false, mensaje: mensajeCerrado };
-    }
+  // Normalizamos el día de la semana para que coincida con tu DB (LUNES, MARTES...)
+  const diasMapa = {
+    1: "LUNES",
+    2: "MARTES",
+    3: "MIÉRCOLES",
+    4: "JUEVES",
+    5: "VIERNES",
+    6: "SÁBADO",
+    7: "DOMINGO",
+  };
+  const diaActual = diasMapa[ahora.weekday];
+  const horaActualStr = ahora.toFormat("HH:mm");
 
-    // 4. Comparar horas (Formato HH:mm)
-    const { apertura, cierre } = configHoy;
+  // 2. Buscar la configuración de hoy
+  // Usamos normalize para ignorar tildes en la comparación por seguridad
+  const configHoy = horarios.find(
+    (h) => normalizeText(h.dia) === normalizeText(diaActual),
+  );
 
-    if (horaActualStr >= apertura && horaActualStr <= cierre) {
-        return { abierto: true };
-    }
-
+  // 3. Validar si el día está activo
+  if (!configHoy || !configHoy.activo) {
     return { abierto: false, mensaje: mensajeCerrado };
+  }
+
+  // 4. Comparar horas (Formato HH:mm)
+  const { apertura, cierre } = configHoy;
+
+  if (horaActualStr >= apertura && horaActualStr <= cierre) {
+    return { abierto: true };
+  }
+
+  return { abierto: false, mensaje: mensajeCerrado };
 };
 </file>
 
@@ -1129,6 +1828,45 @@ router.put('/global', updateGlobalConfigController); // ⬅️ USO DE FUNCIÓN I
 export default router; // ⬅️ EXPORTACIÓN POR DEFECTO DEL ROUTER
 </file>
 
+<file path="src/services/businessRules.js">
+// src/services/businessRules.js
+
+export const applyInference = (extractedData, currentTempData) => {
+    if (!extractedData) return currentTempData;
+
+    const { nombre, direccion, metodoPago, modoEntrega, notasPago, notasCocina } = extractedData;
+    const clean = (val) => (val && val !== 'null' && val !== 'undefined') ? val.trim() : null;
+
+    const dirLimpia = clean(direccion);
+    let modoLimpio = clean(modoEntrega);
+    let pagoLimpio = clean(metodoPago);
+
+    // 📍 Inferencia de Entrega
+    // 🌟 MEJORA: Si la dirección parece una instrucción de Recoger
+    if (dirLimpia && (dirLimpia.toLowerCase().includes('recoger') || dirLimpia.toLowerCase().includes('tienda'))) {
+        console.log("-> Inferencia: El usuario quiere recoger, no es una dirección.");
+        modoLimpio = 'PICKUP';
+        dirLimpia = 'RECOGIDA EN TIENDA'; // Limpiamos el texto basura
+    }
+    // 💳 Inferencia de Pago
+    const notas = [clean(notasPago || notasPago), clean(notasCocina)].filter(Boolean).join(' ').toLowerCase();
+    if (!pagoLimpio) {
+        if (notas.includes('billete') || notas.includes('cambio') || notas.includes('efectivo')) pagoLimpio = 'Efectivo';
+        else if (notas.includes('tarjeta') || notas.includes('terminal')) pagoLimpio = 'Tarjeta';
+    }
+
+    // 🌟 REGLA DE ORO: No sobrescribir lo que el usuario borró manualmente
+    return {
+        ...currentTempData, // Mantenemos el historial y otros campos
+        name: clean(nombre) || currentTempData.name,
+        address: dirLimpia || currentTempData.address,
+        deliveryMode: modoLimpio || currentTempData.deliveryMode,
+        paymentMethod: pagoLimpio ? (pagoLimpio.charAt(0).toUpperCase() + pagoLimpio.slice(1).toLowerCase()) : currentTempData.paymentMethod,
+        orderNotes: notas || currentTempData.orderNotes
+    };
+};
+</file>
+
 <file path="src/services/configService.js">
 // src/services/configService.js - VERSIÓN FINAL PARA PANEL DE ADMIN
 
@@ -1292,216 +2030,254 @@ export async function updateGlobalConfig(updateData) {
 }
 </file>
 
-<file path="src/services/loyaltyService.js">
-// src/services/loyaltyService.js
-import Pedido from '../models/Pedido.js';
+<file path="src/services/flowService.js">
+// src/services/flowService.js
+import { getUltimoPedido, generarPropuestaVIP } from "./loyaltyService.js";
+import { sendMenu } from "../whatsapp/utils.js";
+import { sendWhatsAppNotification } from "./notifyService.js";
+import { updateCart } from "../whatsapp/cartUtils.js";
 
-export const getUltimoPedido = async (userId, businessId) => {
-    try {
-        // Limpiamos el ID para buscar solo por los últimos 10 dígitos (más seguro en MX)
-        const phoneSuffix = userId.slice(-10); 
-        
-        return await Pedido.findOne({ 
-            businessId,
-            telefonoCliente: { $regex: phoneSuffix + '$' } // Busca que termine en esos 10 números
-        })
-        .sort({ createdAt: -1 })
-        .lean();
-    } catch (error) {
-        return null;
+const SALUDOS = [
+  "HOLA",
+  "OLA",
+  "BUENAS",
+  "BUENOS DIAS",
+  "BUENAS TARDES",
+  "BUENAS NOCHES",
+  "MENU",
+  "MENÚ",
+  "ME PUEDES MOSTRAR EL MENU",
+  "QUE VENDEN",
+  "INFO",
+];
+const CORTESIA = [
+  "GRACIAS",
+  "OK",
+  "DALE",
+  "ESTA BIEN",
+  "ENTENDIDO",
+  "PERFECTO",
+  "LISTO",
+  "👍",
+  "BYE",
+  "ADIOS",
+  "EXCELENTE",
+  "MUCHAS GRACIAS",
+  "YA QUEDO",
+];
+const FEEDBACK_NEGATIVO = [
+  "FALTO",
+  "FALTA",
+  "MALO",
+  "FRIO",
+  "SALSA",
+  "TARDE",
+  "EQUIVOCADO",
+  "ERROR",
+  "NO LLEGO",
+  "POCA",
+  "POCO",
+];
+
+export const handleInitialFlow = async (
+  userId,
+  businessId,
+  text,
+  cart,
+  auth,
+  lastOrder = null,
+) => {
+  const normalizedText = text.toUpperCase().trim();
+  const currentState = cart.conversationState;
+  const history = cart.tempData.history || [];
+
+  // 🛡️ 1. DETECTOR DE QUEJAS
+  const esQueja = FEEDBACK_NEGATIVO.some((k) => normalizedText.includes(k));
+  if (esQueja && lastOrder && currentState === "POST_VENTA") {
+    const disculpa = `Lamento mucho el inconveniente con tu pedido *#${lastOrder.numero_pedido}*, ${lastOrder.nombreCliente}. 😔\n\nHe reportado tu mensaje sobre "${text}" al equipo para que lo revisen ahora mismo. ¿Puedo ayudarte con algo más?`;
+    await sendWhatsAppNotification(userId, disculpa, auth);
+    return true;
+  }
+
+  // 💰 2. FILTRO DE CORTESÍA (Ahorro IA)
+  const esCortesia = CORTESIA.includes(normalizedText);
+  const esEmoji = text.length <= 2 && /[\u{1F300}-\u{1F9FF}]/u.test(text);
+
+  if (esCortesia || esEmoji) {
+    let respuesta = "¡Con gusto! Quedo pendiente de tu pedido. 😊";
+    if (lastOrder) {
+      respuesta =
+        lastOrder.estado === "Pendiente de Pago"
+          ? `¡De nada! Sigo a la espera de tu comprobante para procesar la orden *#${lastOrder.numero_pedido}*. 📸`
+          : `¡Un placer! Tu orden *#${lastOrder.numero_pedido}* ya está en proceso. 👨‍🍳`;
     }
-};
+    await sendWhatsAppNotification(userId, respuesta, auth);
+    return true;
+  }
 
-export const generarPropuestaVIP = (ultimoPedido) => {
-    // 1. Validaciones de seguridad
-    if (!ultimoPedido || !ultimoPedido.items || ultimoPedido.items.length === 0) return null;
-    
-    const unMesEnMs = 30 * 24 * 60 * 60 * 1000;
-    if ((new Date() - ultimoPedido.createdAt) > unMesEnMs) return null;
-
-    // 2. Construir resumen de productos
-    const resumen = ultimoPedido.items
-        .map(i => `${i.cantidad}x ${i.nombre}`)
-        .join(', ');
-
-    // 3. Formatear lugar de entrega
-    let lugar = "Recoger en tienda 🛍️";
-    if (ultimoPedido.entregaMode === 'DELIVERY') {
-        // Si es un link de Maps, lo acortamos para que se vea bonito
-        lugar = (ultimoPedido.direccionEntrega && ultimoPedido.direccionEntrega.includes('google.com')) 
-            ? "Tu ubicación guardada 📍" 
-            : (ultimoPedido.direccionEntrega || "A domicilio 🛵");
+  // 🕒 3. MANEJO DE SEGUIMIENTO / COMPROBANTE
+  if (lastOrder && text.length < 40) {
+    const lowerText = text.toLowerCase();
+    const keywordsStatus = [
+      "donde",
+      "viene",
+      "estatus",
+      "pedido",
+      "orden",
+      "va",
+      "falta",
+      "confirmar",
+      "llega",
+      "tarda",
+    ];
+    if (keywordsStatus.some((k) => lowerText.includes(k))) {
+      let statusMsg = `Tu pedido *#${lastOrder.numero_pedido}* está: *${lastOrder.estado}*.\n\n`;
+      statusMsg +=
+        lastOrder.estado === "Pendiente de Pago"
+          ? "Recuerda enviarme la foto de tu comprobante para cocinar. 📸"
+          : "Te avisaremos por aquí cualquier actualización. 🛵";
+      await sendWhatsAppNotification(userId, statusMsg, auth);
+      return true;
     }
 
-    return {
-        texto: `¡Hola de nuevo! 👋 ¿Gustas pedir lo mismo de la última vez?\n\n🍕 *${resumen}*\n📍 *Envío a:* ${lugar}`,
-        datos: {
-            items: ultimoPedido.items,
-            name: ultimoPedido.nombreCliente,
-            address: ultimoPedido.direccionEntrega,
-            deliveryMode: ultimoPedido.entregaMode,
-            paymentMethod: ultimoPedido.metodoPago
-        }
-    };
+    if (
+      currentState === "ESPERANDO_COMPROBANTE" &&
+      text.length < 20 &&
+      !lowerText.includes("menu")
+    ) {
+      const reminderMsg = `He recibido tu mensaje, pero aún necesito la *foto del comprobante* 📸 para validar tu pago del pedido *#${lastOrder.numero_pedido}*.\n\n_Si quieres pedir algo nuevo, escribe *MENÚ*._`;
+      await sendWhatsAppNotification(userId, reminderMsg, auth);
+      return true;
+    }
+  }
+
+  // 🤝 4. REINICIO DE CONVERSACIÓN (VIP / MENÚ)
+  const esSaludo = SALUDOS.some(
+    (saludo) => normalizedText === saludo || normalizedText.startsWith(saludo),
+  );
+  const esMensajeCorto = text.length < 10;
+
+  // 🌟 REGLA DE ORO (FIX CLIENTE 1):
+  // Solo permitimos el flujo de bienvenida si el estado es 'INICIO' o 'POST_VENTA'.
+  // Si el estado es 'MOSTRANDO_MENU' o cualquier otro, ignoramos este bloque para no ciclar al cliente.
+  const estadosDeBienvenida = ["INICIO", "POST_VENTA"];
+  const esEstadoInicialValido = estadosDeBienvenida.includes(currentState);
+
+  console.log("[flowService]", {
+    esSaludo,
+    esMensajeCorto,
+    currentState,
+    cartItems: cart.items.length,
+  });
+
+  if (
+    cart.items.length === 0 &&
+    esEstadoInicialValido &&
+    (esMensajeCorto || esSaludo)
+  ) {
+    console.log(
+      `[flowService] 👋 Manejando inicio legal (Estado: ${currentState}).`,
+    );
+
+    const ultimo = await getUltimoPedido(userId, businessId);
+    const propuesta = generarPropuestaVIP(ultimo);
+
+    if (propuesta && currentState !== "PROPUESTA_VIP") {
+      await updateCart(userId, businessId, {
+        conversationState: "PROPUESTA_VIP",
+      });
+      await sendWhatsAppNotification(
+        userId,
+        {
+          type: "interactive",
+          interactive: {
+            type: "button",
+            body: { text: propuesta.texto },
+            action: {
+              buttons: [
+                {
+                  type: "reply",
+                  reply: { id: "REPETIR_PEDIDO", title: "✅ Sí, lo mismo" },
+                },
+                {
+                  type: "reply",
+                  reply: { id: "MENU_NUEVO", title: "📋 Ver Menú" },
+                },
+              ],
+            },
+          },
+        },
+        auth,
+      );
+      return true;
+    }
+
+    // Si no hay pedido anterior o ya pasó el filtro, mandamos menú y CAMBIAMOS ESTADO
+    await updateCart(userId, businessId, {
+      conversationState: "MOSTRANDO_MENU",
+    });
+    await sendMenu(userId, businessId, auth, cart);
+    return true;
+  }
+
+  return false; // Pasar a Mateo IA
 };
 </file>
 
-<file path="src/services/orderValidator.js">
-// src/services/orderValidator.js
-import MenuItem from '../models/MenuItem.js';
-import logger from '../utils/logger.js';
+<file path="src/services/notifyService.js">
+// src/services/notifyService.js
+import { sendMessage } from "../whatsapp/utils.js";
 
-/**
- * Valida los ítems extraídos por la IA contra el catálogo real de la DB.
- * Aplica Anclaje Semántico para resolver nombres con índices (ej: "1. Pizza")
- */
-export const validarPedido = async (aiItems, businessId) => {
-    try {
-        if (!aiItems || !Array.isArray(aiItems)) return { itemsValidados: [], extrasRechazados: [] };
-        
-        const itemsValidados = [];
-        const extrasRechazados = []; 
-        
-        // Traemos el menú y lo ordenamos por longitud de nombre (Descendente)
-        // 💡 Truco Pro: Buscar primero los nombres más largos evita que "Pizza" 
-        // coincida erróneamente con "Pizza Pepperoni".
-        const menuItems = await MenuItem.find({ businessId, activo: true })
-            .lean()
-            .sort({ nombre: -1 });
+export const sendWhatsAppNotification = async (userId, payload, auth) => {
+  try {
+    await sendMessage(userId, payload, auth);
+    console.log(`✅ [notifyService] WhatsApp enviado a ${userId}`);
+  } catch (error) {
+    console.error(`❌ [notifyService] Error WhatsApp:`, error.message);
+  }
+};
 
-        for (const aiItem of aiItems) {
-            let nombreIA = (aiItem.productName || "").toLowerCase().trim();
-            if (!nombreIA) continue;
-
-            // 🌟 1. LIMPIEZA DE ÍNDICE (Anclaje Semántico)
-            // Quitamos el "1. " o "2 " del inicio si existe
-            const nombreLimpio = nombreIA.replace(/^\d+[\s.]+\s*/, '').trim();
-
-            // 🌟 2. BÚSQUEDA MULTI-NIVEL (Para máxima precisión)
-            let productoReal = menuItems.find(p => {
-                const nombreDB = p.nombre.toLowerCase();
-                
-                // Nivel A: Match Exacto (ej: "coca-cola original" === "coca-cola original")
-                if (nombreLimpio === nombreDB) return true;
-
-                // Nivel B: Match por Inclusión (ej: "coca" está en "coca-cola original")
-                if (nombreLimpio.length > 3 && (nombreLimpio.includes(nombreDB) || nombreDB.includes(nombreLimpio))) return true;
-
-                return false;
-            });
-
-            // 🌟 3. TRATAMIENTO DE PLURALES (Si falló la búsqueda inicial)
-            if (!productoReal && nombreLimpio.endsWith('s')) {
-                const nombreSingular = nombreLimpio.slice(0, -1);
-                productoReal = menuItems.find(p => {
-                    const nombreDB = p.nombre.toLowerCase();
-                    return nombreSingular.length > 3 && (nombreSingular.includes(nombreDB) || nombreDB.includes(nombreSingular));
-                });
-            }
-
-            if (!productoReal) {
-                logger.warn(`[Validator] Producto no encontrado: ${nombreIA}`);
-                continue;
-            }
-
-
-            let precioExtraAcumulado = 0;
-            const opcionesSeleccionadas = [];
-            
-            // VALIDACIÓN DE MODIFICADORES (Agnóstica)
-            if (aiItem.modifiers && Array.isArray(aiItem.modifiers)) {
-                const modifiersSolicitados = [...aiItem.modifiers];
-                const modifiersEncontrados = new Set();
-
-                if (productoReal.modificadores?.length > 0) {
-                    for (const grupo of productoReal.modificadores) {
-                        const seleccionadosDelUsuario = modifiersSolicitados.filter(m => 
-                            grupo.opciones.some(opt => opt.nombre.toLowerCase().includes(m.toLowerCase()))
-                        );
-
-                        seleccionadosDelUsuario.forEach((modNombre, index) => {
-                            const opcionDB = grupo.opciones.find(o => 
-                                o.nombre.toLowerCase().includes(modNombre.toLowerCase())
-                            );
-
-                            if (opcionDB) {
-                                modifiersEncontrados.add(modNombre);
-                                const esExcedente = (index + 1) > grupo.maximo;
-                                if (esExcedente && !grupo.permiteExcedente) return;
-                                
-                                const costoAdicional = esExcedente ? (opcionDB.precioAdicional || 0) : 0;
-                                opcionesSeleccionadas.push({
-                                    grupoNombre: grupo.nombre,
-                                    opcionNombre: opcionDB.nombre,
-                                    precioExtra: costoAdicional
-                                });
-                                precioExtraAcumulado += costoAdicional;
-                            }
-                        });
-                    }
-                }
-
-                // Detección de extras no existentes
-                const huerfanos = modifiersSolicitados.filter(m => !modifiersEncontrados.has(m));
-                if (huerfanos.length > 0) {
-                    extrasRechazados.push({ producto: productoReal.nombre, extras: huerfanos });
-                }
-            }
-
-            const precioUnitarioFinal = productoReal.precioBase + precioExtraAcumulado;
-            const cantidad = parseInt(aiItem.quantity) || 1;
-            const notasItem = aiItem.notes || "";
-
-            // Agrupamiento en el carrito (Mismo ID + Mismos Extras + Mismas Notas)
-            const itemExistenteIdx = itemsValidados.findIndex(v => 
-                v.itemId.toString() === productoReal._id.toString() && 
-                JSON.stringify(v.opcionesSeleccionadas) === JSON.stringify(opcionesSeleccionadas) &&
-                v.notas === notasItem
-            );
-
-            if (itemExistenteIdx > -1) {
-                itemsValidados[itemExistenteIdx].quantity += cantidad;
-            } else {
-                itemsValidados.push({
-                    itemId: productoReal._id,
-                    nombre: productoReal.nombre,
-                    precioUnitario: precioUnitarioFinal,
-                    quantity: cantidad,
-                    opcionesSeleccionadas,
-                    notas: notasItem 
-                });
-            }
-        }
-
-        return { itemsValidados, extrasRechazados };
-
-    } catch (error) {
-        logger.error("Error crítico en validarPedido:", error);
-        return { itemsValidados: [], extrasRechazados: [] };
-    }
+export const notifyDashboard = (businessId, pedido) => {
+  if (!global.io) {
+    console.error(
+      "⚠️ [notifyService] Socket.io no detectado en el espacio global.",
+    );
+    return;
+  }
+  try {
+    const salaId = businessId.toString();
+    const dataFinal = JSON.parse(JSON.stringify(pedido));
+    global.io.to(salaId).emit("NUEVO_PEDIDO", dataFinal);
+    console.log(`📢 [notifyService] Dashboard notificado en sala: ${salaId}`);
+  } catch (error) {
+    console.error(`❌ [notifyService] Error Socket:`, error.message);
+  }
 };
 
 /**
- * Calcula los totales financieros finales
+ * 🌟 LÓGICA TOP-TIER: Notificación inteligente de cambio de estado
+ * Diferencia entre recoger en tienda y envío a domicilio.
  */
-export const calcularTotalesFinales = (items, deliveryMode, restaurante) => {
-    const subtotal = items.reduce((acc, item) => {
-        const qty = item.cantidad || item.quantity || 0;
-        const precio = item.precioUnitario || 0;
-        return acc + (precio * qty);
-    }, 0);
+export const notifyOrderStatusUpdate = async (pedido, nuevoEstado, auth) => {
+  if (!pedido.telefonoCliente || pedido.telefonoCliente === "MOSTRADOR") return;
 
-    const esPickup = deliveryMode === 'PICKUP';
-    // Leemos el costo de la configuración dinámica del restaurante
-    const costoEnvioBase = restaurante.configuracion?.costoEnvioBase || 3000; 
-    const costoEnvioFinal = esPickup ? 0 : costoEnvioBase;
+  let mensaje = "";
+  const n = pedido.numero_pedido;
+  const esPickup = pedido.entregaMode === "PICKUP";
 
-    return {
-        subtotal,
-        envio: costoEnvioFinal,
-        total: subtotal + costoEnvioFinal,
-        esPickup: esPickup
-    };
+  if (nuevoEstado === "Confirmado") {
+    mensaje = `✅ *¡Hola ${pedido.nombreCliente}!* Tu pedido #${n} ha sido confirmado y pronto estará en cocina. 👨‍🍳`;
+  } else if (nuevoEstado === "En Camino") {
+    mensaje = esPickup
+      ? `🛍️ *¡Tu pedido #${n} ya está listo!* Puedes pasar por él a nuestra sucursal. ¡Te esperamos!`
+      : `🛵 *¡Buenas noticias!* Tu pedido #${n} ya salió de cocina y va en camino a tu dirección.`;
+  } else if (nuevoEstado === "Entregado") {
+    mensaje = `🌟 *¡Pedido entregado!* Muchas gracias por tu compra, ${pedido.nombreCliente}. ¡Que lo disfrutes!`;
+  }
+
+  if (mensaje) {
+    await sendWhatsAppNotification(pedido.telefonoCliente, mensaje, auth);
+  }
 };
 </file>
 
@@ -1754,295 +2530,1153 @@ router.delete('/:id', deleteMenuItem);
 export default router;
 </file>
 
+<file path="src/services/loyaltyService.js">
+// src/services/loyaltyService.js
+import Pedido from '../models/Pedido.js';
+
+export const getUltimoPedido = async (userId, businessId) => {
+    try {
+        // Limpiamos el ID para buscar solo por los últimos 10 dígitos (más seguro en MX)
+        const phoneSuffix = userId.slice(-10); 
+        
+        return await Pedido.findOne({ 
+            businessId,
+            telefonoCliente: { $regex: phoneSuffix + '$' } // Busca que termine en esos 10 números
+        })
+        .sort({ createdAt: -1 })
+        .lean();
+    } catch (error) {
+        return null;
+    }
+};
+
+export const generarPropuestaVIP = (ultimoPedido) => {
+    // 1. Validaciones de seguridad
+    if (!ultimoPedido || !ultimoPedido.items || ultimoPedido.items.length === 0) return null;
+    
+    const unMesEnMs = 30 * 24 * 60 * 60 * 1000;
+    if ((new Date() - ultimoPedido.createdAt) > unMesEnMs) return null;
+
+    // 2. Construir resumen de productos
+    const resumen = ultimoPedido.items
+        .map(i => `${i.cantidad}x ${i.nombre}`)
+        .join(', ');
+
+    // 3. Formatear lugar de entrega
+    let lugar = "Recoger en tienda 🛍️";
+    if (ultimoPedido.entregaMode === 'DELIVERY') {
+        // Si es un link de Maps, lo acortamos para que se vea bonito
+        lugar = (ultimoPedido.direccionEntrega && ultimoPedido.direccionEntrega.includes('google.com')) 
+            ? "Tu ubicación guardada 📍" 
+            : (ultimoPedido.direccionEntrega || "A domicilio 🛵");
+    }
+
+    return {
+        texto: `¡Hola de nuevo! 👋 ¿Gustas pedir lo mismo de la última vez?\n\n🍕 *${resumen}*\n📍 *Envío a:* ${lugar}`,
+        datos: {
+            items: ultimoPedido.items,
+            name: ultimoPedido.nombreCliente,
+            address: ultimoPedido.direccionEntrega,
+            deliveryMode: ultimoPedido.entregaMode,
+            paymentMethod: ultimoPedido.metodoPago
+        }
+    };
+};
+</file>
+
+<file path="src/services/orderValidator.js">
+// src/services/orderValidator.js
+import MenuItem from "../models/MenuItem.js";
+import logger from "../utils/logger.js";
+
+/**
+ * Valida los ítems extraídos por la IA contra el catálogo real de la DB.
+ * Aplica Anclaje Semántico para resolver nombres con índices (ej: "1. Pizza")
+ */
+export const validarPedido = async (aiItems, businessId) => {
+  try {
+    if (!aiItems || !Array.isArray(aiItems))
+      return { itemsValidados: [], extrasRechazados: [] };
+
+    const itemsValidados = [];
+    const extrasRechazados = [];
+
+    // Traemos el menú y lo ordenamos por longitud de nombre (Descendente)
+    // 💡 Truco Pro: Buscar primero los nombres más largos evita que "Pizza"
+    // coincida erróneamente con "Pizza Pepperoni".
+    const menuItems = await MenuItem.find({ businessId, activo: true })
+      .lean()
+      .sort({ nombre: -1 });
+
+    for (const aiItem of aiItems) {
+      //const notasSemanticas = [];
+      let nombreIA = (aiItem.productName || "").toLowerCase().trim();
+      if (!nombreIA) continue;
+
+      // 🌟 1. LIMPIEZA DE ÍNDICE (Anclaje Semántico)
+      // Quitamos el "1. " o "2 " del inicio si existe
+      const nombreLimpio = nombreIA.replace(/^\d+[\s.]+\s*/, "").trim();
+
+      // 🌟 2. BÚSQUEDA MULTI-NIVEL (Para máxima precisión)
+      let productoReal = menuItems.find((p) => {
+        const nombreDB = p.nombre.toLowerCase();
+
+        // Nivel A: Match Exacto (ej: "coca-cola original" === "coca-cola original")
+        if (nombreLimpio === nombreDB) return true;
+
+        // Nivel B: Match por Inclusión (ej: "coca" está en "coca-cola original")
+        if (
+          nombreLimpio.length > 3 &&
+          (nombreLimpio.includes(nombreDB) || nombreDB.includes(nombreLimpio))
+        )
+          return true;
+
+        return false;
+      });
+
+      // 🌟 3. TRATAMIENTO DE PLURALES (Si falló la búsqueda inicial)
+      if (!productoReal && nombreLimpio.endsWith("s")) {
+        const nombreSingular = nombreLimpio.slice(0, -1);
+        productoReal = menuItems.find((p) => {
+          const nombreDB = p.nombre.toLowerCase();
+          return (
+            nombreSingular.length > 3 &&
+            (nombreSingular.includes(nombreDB) ||
+              nombreDB.includes(nombreSingular))
+          );
+        });
+      }
+
+      if (!productoReal) {
+        logger.warn(`[Validator] Producto no encontrado: ${nombreIA}`);
+        continue;
+      }
+
+      let precioExtraAcumulado = 0;
+
+      const opcionesSeleccionadas = [];
+
+      // =====================================================
+      // NOTAS SEMÁNTICAS GLOBALES
+      // =====================================================
+
+      const notasSemanticas = [];
+
+      // =====================================================
+      // VALIDACIÓN DE MODIFICADORES
+      // =====================================================
+
+      if (aiItem.modifiers && Array.isArray(aiItem.modifiers)) {
+        const modifiersSolicitados = [...aiItem.modifiers];
+
+        const modifiersEncontrados = new Set();
+
+        if (productoReal.modificadores?.length > 0) {
+          for (const grupo of productoReal.modificadores) {
+            const seleccionadosDelUsuario = modifiersSolicitados.filter(
+              (modifier) => {
+                const modifierValue = modifier.value?.toLowerCase?.() || "";
+
+                return grupo.opciones.some((opt) =>
+                  opt.nombre.toLowerCase().includes(modifierValue),
+                );
+              },
+            );
+
+            seleccionadosDelUsuario.forEach((modifier, index) => {
+              const modifierValue = modifier.value?.toLowerCase?.() || "";
+
+              const opcionDB = grupo.opciones.find((o) =>
+                o.nombre.toLowerCase().includes(modifierValue),
+              );
+
+              if (!opcionDB) {
+                return;
+              }
+
+              modifiersEncontrados.add(modifier.value);
+
+              const esExcedente = index + 1 > grupo.maximo;
+
+              if (esExcedente && !grupo.permiteExcedente) {
+                return;
+              }
+
+              const costoAdicional = esExcedente
+                ? opcionDB.precioAdicional || 0
+                : 0;
+
+              opcionesSeleccionadas.push({
+                grupoNombre: grupo.nombre,
+                opcionNombre: opcionDB.nombre,
+                precioExtra: costoAdicional,
+                semanticType: modifier.type,
+              });
+
+              precioExtraAcumulado += costoAdicional;
+            });
+          }
+        }
+
+        // =====================================================
+        // MODIFIERS NO ESTRUCTURADOS
+        // =====================================================
+
+        const huerfanos = modifiersSolicitados.filter(
+          (modifier) => !modifiersEncontrados.has(modifier.value),
+        );
+
+        if (huerfanos.length > 0) {
+          extrasRechazados.push({
+            producto: productoReal.nombre,
+            extras: huerfanos,
+          });
+        }
+
+        // =====================================================
+        // CONVERTIR A NOTAS HUMANAS
+        // =====================================================
+        console.log("[Validator] Modifiers recibidos:", modifiersSolicitados);
+        modifiersSolicitados.forEach((modifier) => {
+          const value = modifier.value?.trim();
+
+          if (!value) {
+            return;
+          }
+
+          if (modifier.type === "REMOVE_INGREDIENT") {
+            notasSemanticas.push(`Sin ${value}`);
+          }
+
+          if (modifier.type === "ADD_INGREDIENT") {
+            notasSemanticas.push(`Con ${value}`);
+          }
+
+          if (modifier.type === "EXTRA_INGREDIENT") {
+            notasSemanticas.push(`Extra ${value}`);
+          }
+        });
+      }
+
+      const precioUnitarioFinal =
+        productoReal.precioBase + precioExtraAcumulado;
+      const cantidad = parseInt(aiItem.quantity) || 1;
+      const notasExistentes = aiItem.notes || "";
+
+      const notasIA = notasSemanticas.join(", ");
+
+      const notasItem = [notasExistentes, notasIA].filter(Boolean).join(" | ");
+
+      console.log("[Validator] Notas finales:", notasItem);
+
+      // Agrupamiento en el carrito (Mismo ID + Mismos Extras + Mismas Notas)
+      const itemExistenteIdx = itemsValidados.findIndex(
+        (v) =>
+          v.itemId.toString() === productoReal._id.toString() &&
+          JSON.stringify(v.opcionesSeleccionadas) ===
+            JSON.stringify(opcionesSeleccionadas) &&
+          v.notas === notasItem,
+      );
+
+      if (itemExistenteIdx > -1) {
+        itemsValidados[itemExistenteIdx].quantity += cantidad;
+      } else {
+        itemsValidados.push({
+          itemId: productoReal._id,
+          nombre: productoReal.nombre,
+          precioUnitario: precioUnitarioFinal,
+          quantity: cantidad,
+          opcionesSeleccionadas,
+          notas: notasItem,
+        });
+      }
+    }
+
+    return { itemsValidados, extrasRechazados };
+  } catch (error) {
+    logger.error("Error crítico en validarPedido:", error);
+    return { itemsValidados: [], extrasRechazados: [] };
+  }
+};
+
+/**
+ * Calcula los totales financieros finales
+ */
+export const calcularTotalesFinales = (items, deliveryMode, restaurante) => {
+  const subtotal = items.reduce((acc, item) => {
+    const qty = item.cantidad || item.quantity || 0;
+    const precio = item.precioUnitario || 0;
+    return acc + precio * qty;
+  }, 0);
+
+  const esPickup = deliveryMode === "PICKUP";
+  // Leemos el costo de la configuración dinámica del restaurante
+  const costoEnvioBase = restaurante.configuracion?.costoEnvioBase || 3000;
+  const costoEnvioFinal = esPickup ? 0 : costoEnvioBase;
+
+  return {
+    subtotal,
+    envio: costoEnvioFinal,
+    total: subtotal + costoEnvioFinal,
+    esPickup: esPickup,
+  };
+};
+</file>
+
+<file path="src/models/MenuItem.js">
+// src/models/MenuItem.js
+import mongoose from 'mongoose';
+
+// 1. Esquema para opciones individuales (ej: "Extra Queso", "Pastor")
+const opcionSchema = new mongoose.Schema({
+    nombre: { type: String, required: true },
+    precioAdicional: { type: Number, default: 0 }, // En centavos
+    disponible: { type: Boolean, default: true }
+}, { _id: true });
+
+// 2. Esquema para grupos de modificadores (Jerarquía Universal)
+const grupoModificadoresSchema = new mongoose.Schema({
+    nombre: { type: String, required: true }, // Ej: "Escoge tu carne", "Ingredientes Extra"
+    
+    // REGLAS DE ORO DEL COMANDEO (Punto 1 y 3 del Roadmap)
+    minimo: { type: Number, default: 0 }, // 1 si es obligatorio (Ej: Tacos/Tamales)
+    maximo: { type: Number, default: 1 }, // Límite de lo incluido o permitido
+    
+    // ¿Qué pasa si el cliente pide más del máximo?
+    permiteExcedente: { type: Boolean, default: false }, 
+    // true: Se cobran como extras. false: Mateo dice "No se puede".
+
+    opciones: [opcionSchema]
+}, { _id: true });
+
+// 3. Esquema Principal de Producto
+const menuSchema = new mongoose.Schema({
+    businessId: { 
+        type: mongoose.Schema.Types.ObjectId, 
+        ref: 'Restaurante', 
+        required: true, 
+        index: true 
+    },
+    nombre: { type: String, required: true, trim: true },
+    descripcion: { type: String }, 
+    precioBase: { type: Number, required: true, min: 0 }, // Precio inicial (en centavos)
+    categoria: { type: String, default: 'general', index: true },
+    
+    // PILAR 1: ATRIBUTOS DINÁMICOS
+    tipoProducto: { 
+        type: String, 
+        enum: ['simple', 'con_variantes', 'compuesto'], 
+        default: 'simple' 
+    },
+    modificadores: [grupoModificadoresSchema],
+
+    // PILAR 2: LÓGICA TEMPORAL (Disponibilidad por día)
+    diasDisponibles: { 
+        type: [Number], 
+        default: [0, 1, 2, 3, 4, 5, 6] 
+    },
+
+    // Stock y Control (Punto 4 del Roadmap)
+    disponible: { type: Boolean, default: true },
+    cantidad_diaria: { type: Number, default: 99 },
+    vendidas_hoy: { type: Number, default: 0 },
+    
+    // 🌟 NUEVO CAMPO: Umbral para avisar al dueño que el producto se va a agotar
+    alerta_en: { type: Number, default: 5 }, 
+    
+    activo: { type: Boolean, default: true }
+}, { timestamps: true });
+
+// Evitar errores de re-compilación de modelos en desarrollo
+export default mongoose.models.MenuItem || mongoose.model('MenuItem', menuSchema);
+</file>
+
+<file path="src/routes/order.routes.js">
+// src/routes/order.routes.js
+import express from 'express';
+import { verificarToken } from '../middleware/auth.middleware.js';
+// 🛑 ASEGÚRATE DE QUE ESTÉ EN ESTA LISTA 🛑
+import { 
+    getActiveOrders, 
+    updateOrderStatus, 
+    createDirectOrder 
+} from '../controllers/order.controller.js';
+
+const router = express.Router();
+
+// 🛡️ Todas las rutas de abajo requieren token
+router.use(verificarToken); 
+
+router.get('/', getActiveOrders); 
+router.put('/:id/status', updateOrderStatus);
+router.post('/directo', createDirectOrder);
+
+export default router;
+</file>
+
+<file path="src/services/menuService.js">
+// src/services/menuService.js
+// FIX: Caché migrada de Map() en proceso a Redis.
+//
+// El Map() anterior moría con el proceso y desincronizaba instancias en cluster.
+// Con Redis la caché es compartida: si el Admin actualiza el menú en el Dashboard,
+// el próximo mensaje de WhatsApp (incluso en otro proceso) verá el menú fresco.
+//
+// TTL: 60 segundos. Puedes ajustarlo con la variable MENU_CACHE_TTL en .env.
+import MenuItem from '../models/MenuItem.js';
+import { sessionAdapter } from '../config/redis.js';
+import logger from '../utils/logger.js';
+
+const TTL = parseInt(process.env.MENU_CACHE_TTL || '60', 10);
+
+/**
+ * Obtiene el menú activo y disponible para hoy, con caché Redis compartida.
+ * @param {string} businessId
+ * @returns {Promise<Array>} Lista de MenuItems
+ */
+export const getMenu = async (businessId) => {
+    if (!businessId) return [];
+
+    const cacheKey = `menu:${businessId}`;
+
+    try {
+        const cached = await sessionAdapter.get(cacheKey);
+        if (cached) return cached; // sessionAdapter ya hace JSON.parse
+    } catch {
+        logger.warn('[MenuService] Redis no disponible, consultando DB directamente');
+    }
+
+    try {
+        const diaActual = new Date().getDay();
+        const menu = await MenuItem.find({
+            businessId,
+            activo: true,
+            disponible: true,
+            diasDisponibles: diaActual,
+        }).lean();
+
+        try {
+            await sessionAdapter.set(cacheKey, menu, TTL);
+        } catch {
+            logger.warn('[MenuService] No se pudo guardar caché en Redis');
+        }
+
+        return menu;
+    } catch (error) {
+        logger.error('[MenuService] Error cargando menú:', error.message);
+        return [];
+    }
+};
+
+/**
+ * Invalida la caché del menú de un negocio.
+ * Llamar esto cuando el Admin guarda cambios en el catálogo.
+ * @param {string} businessId
+ */
+export const invalidateMenuCache = async (businessId) => {
+    if (!businessId) return;
+    try {
+        await sessionAdapter.del(`menu:${businessId}`);
+        logger.info(`[MenuService] Caché invalidada para negocio ${businessId}`);
+    } catch {
+        logger.warn('[MenuService] No se pudo invalidar caché de menú');
+    }
+};
+</file>
+
 <file path="src/workers/orderWorker.js">
 // src/workers/orderWorker.js
-import { Worker } from 'bullmq';
-import Pedido from '../models/Pedido.js';
-import Restaurante from '../models/Restaurante.js';
-import MenuItem from '../models/MenuItem.js';
-import { connection } from '../config/redis.js';
+import { Worker } from "bullmq";
+import Pedido from "../models/Pedido.js";
+import Restaurante from "../models/Restaurante.js";
+import MenuItem from "../models/MenuItem.js";
+import { connection } from "../config/redis.js";
 
 // Capa de Servicios
-import { getIntention } from '../services/aiService.js';
-import { applyInference } from '../services/businessRules.js';
-import { processCartActions } from '../services/cartService.js';
-import { notifyDashboard, sendWhatsAppNotification } from '../services/notifyService.js';
-import { handleInitialFlow } from '../services/flowService.js'; 
+import { getIntention } from "../services/aiService.js";
+import { applyInference } from "../services/businessRules.js";
+import { processCartActions } from "../services/cartService.js";
+import {
+  notifyDashboard,
+  sendWhatsAppNotification,
+} from "../services/notifyService.js";
+import { handleInitialFlow } from "../services/flowService.js";
 
 // Capa de Utilidades
-import { getOrCreateCart, updateCart, removeItemsByName, addItemToCart } from '../whatsapp/cartUtils.js';
-import { sendMenu, sendCartSummary, sendPaymentMethodOptions } from '../whatsapp/utils.js';
-import { calcularTotalesFinales, validarPedido } from '../services/orderValidator.js';
-import { processFinalOrder } from '../whatsapp/orderProcessor.js';
-import { getUltimoPedido, generarPropuestaVIP } from '../services/loyaltyService.js';
-import { calcularDistanciaKM } from '../utils/geoUtils.js';
-import logger from '../utils/logger.js';
+import {
+  getOrCreateCart,
+  updateCart,
+  removeItemsByName,
+  addItemToCart,
+} from "../whatsapp/cartUtils.js";
+import {
+  sendMenu,
+  sendCartSummary,
+  sendPaymentMethodOptions,
+} from "../whatsapp/utils.js";
+import {
+  calcularTotalesFinales,
+  validarPedido,
+} from "../services/orderValidator.js";
+import { processFinalOrder } from "../whatsapp/orderProcessor.js";
+import {
+  getUltimoPedido,
+  generarPropuestaVIP,
+} from "../services/loyaltyService.js";
+import { calcularDistanciaKM } from "../utils/geoUtils.js";
+import logger from "../utils/logger.js";
 
 console.log("👷 [Worker] Orquestador SaaS iniciado y escuchando...");
 
+import { extractReferences } from "../domains/semantic/detectors/extractReferences.js";
+import { inferOperations } from "../domains/semantic/parsers/inferOperations.js";
+import { executeSemanticOperations } from "../domains/semantic/engine/executeSemanticOperations.js";
+import { resolveContextReference } from "../domains/semantic/detectors/resolveContextReference.js";
+import { detectProductReferences } from "../domains/semantic/detectors/detectProductReferences.js";
+import { inferModifiers } from "../domains/semantic/detectors/inferModifiers.js";
+import { splitSemanticChunks } from "../domains/semantic/parsers/semanticChunker.js";
+
+import { processSemanticMessage } from "../domains/semanticEngine.js";
 // ==========================================
 // --- HELPERS DE INTERFAZ ---
 // ==========================================
 
 const enviarBotonesContinuar = async (userId, bodyText, auth, cart) => {
-    const tieneItems = cart && cart.items && cart.items.length > 0;
-    const buttons = tieneItems ? [
+  const tieneItems = cart && cart.items && cart.items.length > 0;
+  const buttons = tieneItems
+    ? [
         { id: "BTN_CHECKOUT", title: "🚀 Ir a Pagar" },
         { id: "BTN_VER_QUITAR", title: "🛒 Ver Carrito" },
-        { id: "MENU", title: "📋 Ver Menú" }
-    ] : [
-        { id: "MENU", title: "📋 Ver Menú / Pedir" }
-    ];
+        { id: "MENU", title: "📋 Ver Menú" },
+      ]
+    : [{ id: "MENU", title: "📋 Ver Menú / Pedir" }];
 
-    await sendWhatsAppNotification(userId, {
-        type: "interactive",
-        interactive: {
-            type: "button",
-            body: { text: bodyText },
-            action: { buttons: buttons.map(btn => ({ type: "reply", reply: { id: btn.id, title: btn.title } })) }
-        }
-    }, auth);
+  await sendWhatsAppNotification(
+    userId,
+    {
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: bodyText },
+        action: {
+          buttons: buttons.map((btn) => ({
+            type: "reply",
+            reply: { id: btn.id, title: btn.title },
+          })),
+        },
+      },
+    },
+    auth,
+  );
 };
 
 // 🌟 PIEZA RESTAURADA: Función para mostrar la lista de eliminación
 const enviarListaParaQuitar = async (userId, cart, auth) => {
-    if (!cart.items || cart.items.length === 0) {
-        return await sendWhatsAppNotification(userId, "Tu carrito está vacío. 🛒", auth);
-    }
-    const rows = cart.items.map((item, index) => ({
-        id: `REMOVE_IDX_${index}`,
-        title: `Quitar ${item.nombre}`.substring(0, 24),
-        description: `${item.cantidad}x - $${(item.precioUnitario * item.cantidad / 100).toFixed(2)}`.substring(0, 72)
-    }));
-    await sendWhatsAppNotification(userId, {
-        type: "interactive",
-        interactive: {
-            type: "list",
-            header: { type: "text", text: "Gestionar Carrito" },
-            body: { text: "Selecciona el producto que deseas eliminar de tu pedido:" },
-            footer: { text: "Toca para ver productos" },
-            action: { button: "Ver Productos", sections: [{ title: "Tu Pedido Actual", rows }] }
-        }
-    }, auth);
+  if (!cart.items || cart.items.length === 0) {
+    return await sendWhatsAppNotification(
+      userId,
+      "Tu carrito está vacío. 🛒",
+      auth,
+    );
+  }
+  const rows = cart.items.map((item, index) => ({
+    id: `REMOVE_IDX_${index}`,
+    title: `Quitar ${item.nombre}`.substring(0, 24),
+    description:
+      `${item.cantidad}x - $${((item.precioUnitario * item.cantidad) / 100).toFixed(2)}`.substring(
+        0,
+        72,
+      ),
+  }));
+  await sendWhatsAppNotification(
+    userId,
+    {
+      type: "interactive",
+      interactive: {
+        type: "list",
+        header: { type: "text", text: "Gestionar Carrito" },
+        body: {
+          text: "Selecciona el producto que deseas eliminar de tu pedido:",
+        },
+        footer: { text: "Toca para ver productos" },
+        action: {
+          button: "Ver Productos",
+          sections: [{ title: "Tu Pedido Actual", rows }],
+        },
+      },
+    },
+    auth,
+  );
 };
 
-const ejecutarCheckoutInteligente = async (userId, businessId, cart, auth, restaurante) => {
-    if (!cart.items || cart.items.length === 0) return await sendMenu(userId, businessId, auth, cart);
-    const { tempData } = cart;
+const ejecutarCheckoutInteligente = async (
+  userId,
+  businessId,
+  cart,
+  auth,
+  restaurante,
+) => {
+  if (!cart.items || cart.items.length === 0)
+    return await sendMenu(userId, businessId, auth, cart);
+  const { tempData } = cart;
 
-    if (!tempData.deliveryMode) {
-        await updateCart(userId, businessId, { conversationState: 'PREGUNTANDO_MODO_ENTREGA' });
-        return await sendWhatsAppNotification(userId, {
-            type: "interactive",
-            interactive: {
-                type: "button",
-                body: { text: "Excelente elección. 🍽️ ¿Cómo gustas recibir tu pedido?" },
-                action: { buttons: [{ type: "reply", reply: { id: "MODE_DELIVERY", title: "A domicilio 🛵" } }, { type: "reply", reply: { id: "MODE_PICKUP", title: "Recoger en tienda 🛍️" } }] }
-            }
-        }, auth);
-    }
+  if (!tempData.deliveryMode) {
+    await updateCart(userId, businessId, {
+      conversationState: "PREGUNTANDO_MODO_ENTREGA",
+    });
+    return await sendWhatsAppNotification(
+      userId,
+      {
+        type: "interactive",
+        interactive: {
+          type: "button",
+          body: {
+            text: "Excelente elección. 🍽️ ¿Cómo gustas recibir tu pedido?",
+          },
+          action: {
+            buttons: [
+              {
+                type: "reply",
+                reply: { id: "MODE_DELIVERY", title: "A domicilio 🛵" },
+              },
+              {
+                type: "reply",
+                reply: { id: "MODE_PICKUP", title: "Recoger en tienda 🛍️" },
+              },
+            ],
+          },
+        },
+      },
+      auth,
+    );
+  }
 
-    if (!tempData.name || tempData.name.length < 2) {
-        await updateCart(userId, businessId, { conversationState: 'PREGUNTANDO_NOMBRE' });
-        return await sendWhatsAppNotification(userId, "¡Perfecto! ¿A nombre de quién registro el pedido? 👤", auth);
-    }
+  if (!tempData.name || tempData.name.length < 2) {
+    await updateCart(userId, businessId, {
+      conversationState: "PREGUNTANDO_NOMBRE",
+    });
+    return await sendWhatsAppNotification(
+      userId,
+      "¡Perfecto! ¿A nombre de quién registro el pedido? 👤",
+      auth,
+    );
+  }
 
-    if (tempData.deliveryMode === 'DELIVERY' && !tempData.address) {
-        await updateCart(userId, businessId, { conversationState: 'PREGUNTANDO_DIRECCION' });
-        return await sendWhatsAppNotification(userId, "Para el envío, ¿cuál es tu dirección exacta? (O envía tu ubicación 📍)", auth);
-    }
+  if (tempData.deliveryMode === "DELIVERY" && !tempData.address) {
+    await updateCart(userId, businessId, {
+      conversationState: "PREGUNTANDO_DIRECCION",
+    });
+    return await sendWhatsAppNotification(
+      userId,
+      "Para el envío, ¿cuál es tu dirección exacta? (O envía tu ubicación 📍)",
+      auth,
+    );
+  }
 
-    if (!tempData.paymentMethod) {
-        await updateCart(userId, businessId, { conversationState: 'PREGUNTANDO_PAGO' });
-        return await sendPaymentMethodOptions(userId, businessId, auth);
-    }
+  if (!tempData.paymentMethod) {
+    await updateCart(userId, businessId, {
+      conversationState: "PREGUNTANDO_PAGO",
+    });
+    return await sendPaymentMethodOptions(userId, businessId, auth);
+  }
 
-    await updateCart(userId, businessId, { conversationState: 'CONFIRMANDO_PEDIDO' });
-    await sendCartSummary(userId, cart, businessId, auth);
+  await updateCart(userId, businessId, {
+    conversationState: "CONFIRMANDO_PEDIDO",
+  });
+  await sendCartSummary(userId, cart, businessId, auth);
 };
 
 // ==========================================
 // --- EL WORKER MAESTRO ---
 // ==========================================
 
-const orderWorker = new Worker('order-processing', async job => {
-    const source = job.name; 
-    const { businessId, auth, userId, messageObject, restauranteConfig } = job.data;
-    
-    console.log(`\n🔥 [Worker] Tarea recibida: ${source} | ID: ${job.id} | Tipo: ${messageObject?.type}`);
+const orderWorker = new Worker(
+  "order-processing",
+  async (job) => {
+    const source = job.name;
+    const { businessId, auth, userId, messageObject, restauranteConfig } =
+      job.data;
+
+    console.log(
+      `\n🔥 [Worker] Tarea recibida: ${source} | ID: ${job.id} | Tipo: ${messageObject?.type}`,
+    );
 
     try {
-        if (source === 'WHATSAPP') {
-            const restaurante = await Restaurante.findById(businessId).lean();
-            let cart = await getOrCreateCart(userId, businessId);
+      if (source === "WHATSAPP") {
+        const restaurante = await Restaurante.findById(businessId).lean();
+        let cart = await getOrCreateCart(userId, businessId);
 
-            // --- 1. MANEJO DE INTERACTIVOS (BOTONES) ---
-            if (messageObject.type === 'interactive') {
-                const actionId = messageObject.interactive.button_reply?.id || messageObject.interactive.list_reply?.id;
+        // --- 1. MANEJO DE INTERACTIVOS (BOTONES) ---
+        if (messageObject.type === "interactive") {
+          const actionId =
+            messageObject.interactive.button_reply?.id ||
+            messageObject.interactive.list_reply?.id;
 
-                if (actionId === 'REPETIR_PEDIDO') {
-                    const ultimo = await getUltimoPedido(userId, businessId);
-                    if (ultimo) {
-                        let itemsFallidos = [];
-                        for (const item of ultimo.items) {
-                            const res = await addItemToCart(userId, businessId, { itemId: item.itemId, quantity: item.cantidad, opcionesSeleccionadas: item.opcionesSeleccionadas || [], notas: item.notas || "" });
-                            if (!res.success) itemsFallidos.push(item.nombre);
-                        }
-                        await updateCart(userId, businessId, { conversationState: 'PROPUESTA_VIP', tempData: { ...cart.tempData, name: ultimo.nombreCliente, address: ultimo.direccionEntrega, deliveryMode: ultimo.entregaMode, paymentMethod: ultimo.metodoPago } });
-                        cart = await getOrCreateCart(userId, businessId);
-                        const msg = itemsFallidos.length > 0 ? `Pedido cargado parcial (sin stock de: ${itemsFallidos.join(', ')}).` : `¡Listo! Pedido anterior cargado.`;
-                        return await sendWhatsAppNotification(userId, { type: "interactive", interactive: { type: "button", body: { text: `${msg}\n\n¿Confirmamos los datos?` }, action: { buttons: [{ type: "reply", reply: { id: "VIP_CONFIRMAR_TODO", title: "✅ Todo igual" } }, { type: "reply", reply: { id: "VIP_CAMBIAR_DATOS", title: "✏️ Cambiar algo" } }, { type: "reply", reply: { id: "MENU", title: "📋 Ver Menú" } }] } } }, auth);
-                    }
-                }
-
-                if (actionId === 'VIP_CAMBIAR_DATOS') {
-                    await updateCart(userId, businessId, { conversationState: 'PREGUNTANDO_MODO_ENTREGA', tempData: { ...cart.tempData, deliveryMode: null, address: null, paymentMethod: null } });
-                    cart = await getOrCreateCart(userId, businessId);
-                    return await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante);
-                }
-
-                if (actionId === 'VIP_CONFIRMAR_TODO' || actionId === 'BTN_CHECKOUT') return await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante);
-                
-                if (actionId === 'BTN_LANZAR_LISTA_QUITAR') return await enviarListaParaQuitar(userId, cart, auth);
-
-                if (actionId === 'MENU' || actionId === 'MENU_NUEVO') {
-                    await updateCart(userId, businessId, { conversationState: 'MOSTRANDO_MENU', tempData: { ...cart.tempData, deliveryMode: null, address: null, paymentMethod: null } });
-                    cart = await getOrCreateCart(userId, businessId);
-                    return await sendMenu(userId, businessId, auth, cart);
-                }
-
-                if (actionId === 'CARRITO' || actionId === 'BTN_VER_QUITAR') return await sendCartSummary(userId, cart, businessId, auth);
-
-                if (actionId === 'BTN_CONFIRMAR_FINAL') {
-                    const financieros = calcularTotalesFinales(cart.items, cart.tempData.deliveryMode, restaurante);
-                    const pedidoFinal = await processFinalOrder(userId, cart, businessId, auth, financieros);
-                    if (pedidoFinal) notifyDashboard(businessId, pedidoFinal);
-                    return;
-                }
-
-                if (actionId?.startsWith('REMOVE_IDX_')) {
-                    const index = parseInt(actionId.split('_')[2]);
-                    const removedName = cart.items[index]?.nombre;
-                    await removeItemsByName(userId, businessId, removedName);
-                    await sendWhatsAppNotification(userId, `✅ Eliminado: *${removedName}*`, auth);
-                    const updatedCart = await getOrCreateCart(userId, businessId);
-                    return await enviarBotonesContinuar(userId, "¿Deseas algo más?", auth, updatedCart);
-                }
-
-                if (actionId?.startsWith('MODE_')) cart.tempData.deliveryMode = actionId === 'MODE_DELIVERY' ? 'DELIVERY' : 'PICKUP';
-                if (actionId?.startsWith('PAYMENT_')) cart.tempData.paymentMethod = actionId.replace('PAYMENT_', '').replace(/_/g, ' ');
-
-                await updateCart(userId, businessId, { tempData: cart.tempData });
-                return await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante);
-            }
-
-            // --- 2. UBICACIÓN GPS ---
-            else if (messageObject.type === 'location') {
-                const { latitude, longitude } = messageObject.location;
-                const [restLat, restLon] = restaurante.configuracion.ubicacionLocal?.split(',').map(Number) || [0, 0];
-                const distancia = calcularDistanciaKM(latitude, longitude, restLat, restLon);
-                const mapsLink = `https://www.google.com/maps?q=${latitude},${longitude}`;
-
-                if (distancia > 5) {
-                    await sendWhatsAppNotification(userId, `📍 Estás a ${distancia.toFixed(1)}km. Solo entregamos a 5km. He marcado para *Recoger en Tienda* 🛍️`, auth);
-                    await updateCart(userId, businessId, { tempData: { ...cart.tempData, deliveryMode: 'PICKUP', address: 'GPS: ' + mapsLink } });
-                } else {
-                    await sendWhatsAppNotification(userId, "📍 Ubicación guardada con éxito. 🛵", auth);
-                    await updateCart(userId, businessId, { tempData: { ...cart.tempData, deliveryMode: 'DELIVERY', address: mapsLink } });
-                }
-                cart = await getOrCreateCart(userId, businessId);
-                return await ejecutarCheckoutInteligente(userId, businessId, cart, auth, restaurante);
-            }
-
-            // --- 3. IMÁGENES (COMPROBANTES) ---
-            else if (messageObject.type === 'image') {
-                if (cart.conversationState === 'ESPERANDO_COMPROBANTE') {
-                    const pedido = await Pedido.findOne({ telefonoCliente: userId, estado: 'Pendiente de Pago' }).sort({ createdAt: -1 });
-                    if (pedido) {
-                        pedido.comentarios += " | [SISTEMA: Comprobante enviado]";
-                        await pedido.save();
-                        notifyDashboard(businessId, pedido);
-                        await updateCart(userId, businessId, { conversationState: 'POST_VENTA' });
-                        return await sendWhatsAppNotification(userId, "¡Gracias! He recibido tu comprobante. 📸 Un agente lo validará pronto. 😊", auth);
-                    }
-                }
-                return await sendWhatsAppNotification(userId, "¡Gracias por la imagen! Si necesitas pedir algo, solo dime. 🍔", auth);
-            }
-
-            // --- 4. TEXTO / IA ---
-            else {
-                const text = (messageObject.text?.body || '').trim();
-                const history = cart.tempData.history || [];
-                const treintaMinutosAtras = new Date(Date.now() - 30 * 60 * 1000);
-                const lastOrder = await Pedido.findOne({ telefonoCliente: userId, createdAt: { $gte: treintaMinutosAtras } }).sort({ createdAt: -1 }).lean();
-
-                const flujoManejado = await handleInitialFlow(userId, businessId, text, cart, auth, lastOrder);
-                if (flujoManejado) return;
-
-                if (cart.conversationState === 'PREGUNTANDO_NOMBRE' || cart.conversationState === 'PREGUNTANDO_DIRECCION') {
-                    const field = cart.conversationState === 'PREGUNTANDO_NOMBRE' ? 'name' : 'address';
-                    await updateCart(userId, businessId, { tempData: { ...cart.tempData, [field]: text }, conversationState: 'MOSTRANDO_MENU' });
-                    const updatedCart = await getOrCreateCart(userId, businessId);
-                    return await ejecutarCheckoutInteligente(userId, businessId, updatedCart, auth, restaurante);
-                }
-
-                // Traductor de Índices Protegido
-                let textoParaIA = text;
-                const menuMap = cart.tempData.menuMap || [];
-                if (menuMap.length > 0) {
-                    const mapOrdenado = [...menuMap].sort((a, b) => b.index - a.index);
-                    mapOrdenado.forEach(item => {
-                        const regexPuntero = new RegExp(`\\b(la|el|del|n\\.?|#|numero|item|posicion)\\s*${item.index}\\b`, 'gi');
-                        const esSoloNumero = text.trim() === item.index.toString();
-                        if (esSoloNumero) textoParaIA = item.nombre;
-                        else if (regexPuntero.test(textoParaIA)) textoParaIA = textoParaIA.replace(regexPuntero, ` ${item.nombre} `);
-                    });
-                }
-
-                const context = { businessId, restauranteConfig, history, menuMap, lastProductDiscussed: cart.tempData.lastProductDiscussed, lastOrder, cartState: cart.conversationState };
-                const aiResponse = await getIntention(textoParaIA, context);
-                
-                const updatedData = applyInference(aiResponse.extractedData, cart.tempData);
-                await updateCart(userId, businessId, { tempData: updatedData });
-
-                const { cart: finalCart, alerts } = await processCartActions(userId, businessId, aiResponse.items);
-                let mensajeFinal = aiResponse.waiterMessage + (alerts ? `\n\n${alerts}` : "");
-
-                await updateCart(userId, businessId, {
-                    conversationState: 'MOSTRANDO_MENU',
-                    tempData: {
-                        ...updatedData,
-                        history: [...history, { role: "user", content: text }, { role: "assistant", content: mensajeFinal }].slice(-6),
-                        lastProductDiscussed: aiResponse.items?.[0]?.productName || context.lastProductDiscussed
-                    }
+          if (actionId === "REPETIR_PEDIDO") {
+            const ultimo = await getUltimoPedido(userId, businessId);
+            if (ultimo) {
+              let itemsFallidos = [];
+              for (const item of ultimo.items) {
+                const res = await addItemToCart(userId, businessId, {
+                  itemId: item.itemId,
+                  quantity: item.cantidad,
+                  opcionesSeleccionadas: item.opcionesSeleccionadas || [],
+                  notas: item.notas || "",
                 });
-
-                return await enviarBotonesContinuar(userId, mensajeFinal, auth, finalCart);
+                if (!res.success) itemsFallidos.push(item.nombre);
+              }
+              await updateCart(userId, businessId, {
+                conversationState: "PROPUESTA_VIP",
+                tempData: {
+                  ...cart.tempData,
+                  name: ultimo.nombreCliente,
+                  address: ultimo.direccionEntrega,
+                  deliveryMode: ultimo.entregaMode,
+                  paymentMethod: ultimo.metodoPago,
+                },
+              });
+              cart = await getOrCreateCart(userId, businessId);
+              const msg =
+                itemsFallidos.length > 0
+                  ? `Pedido cargado parcial (sin stock de: ${itemsFallidos.join(", ")}).`
+                  : `¡Listo! Pedido anterior cargado.`;
+              return await sendWhatsAppNotification(
+                userId,
+                {
+                  type: "interactive",
+                  interactive: {
+                    type: "button",
+                    body: { text: `${msg}\n\n¿Confirmamos los datos?` },
+                    action: {
+                      buttons: [
+                        {
+                          type: "reply",
+                          reply: {
+                            id: "VIP_CONFIRMAR_TODO",
+                            title: "✅ Todo igual",
+                          },
+                        },
+                        {
+                          type: "reply",
+                          reply: {
+                            id: "VIP_CAMBIAR_DATOS",
+                            title: "✏️ Cambiar algo",
+                          },
+                        },
+                        {
+                          type: "reply",
+                          reply: { id: "MENU", title: "📋 Ver Menú" },
+                        },
+                      ],
+                    },
+                  },
+                },
+                auth,
+              );
             }
+          }
+
+          if (actionId === "VIP_CAMBIAR_DATOS") {
+            await updateCart(userId, businessId, {
+              conversationState: "PREGUNTANDO_MODO_ENTREGA",
+              tempData: {
+                ...cart.tempData,
+                deliveryMode: null,
+                address: null,
+                paymentMethod: null,
+              },
+            });
+            cart = await getOrCreateCart(userId, businessId);
+            return await ejecutarCheckoutInteligente(
+              userId,
+              businessId,
+              cart,
+              auth,
+              restaurante,
+            );
+          }
+
+          if (actionId === "VIP_CONFIRMAR_TODO" || actionId === "BTN_CHECKOUT")
+            return await ejecutarCheckoutInteligente(
+              userId,
+              businessId,
+              cart,
+              auth,
+              restaurante,
+            );
+
+          if (actionId === "BTN_LANZAR_LISTA_QUITAR")
+            return await enviarListaParaQuitar(userId, cart, auth);
+
+          if (actionId === "MENU" || actionId === "MENU_NUEVO") {
+            await updateCart(userId, businessId, {
+              conversationState: "MOSTRANDO_MENU",
+              tempData: {
+                ...cart.tempData,
+                deliveryMode: null,
+                address: null,
+                paymentMethod: null,
+              },
+            });
+            cart = await getOrCreateCart(userId, businessId);
+            return await sendMenu(userId, businessId, auth, cart);
+          }
+
+          if (actionId === "CARRITO" || actionId === "BTN_VER_QUITAR")
+            return await sendCartSummary(userId, cart, businessId, auth);
+
+          if (actionId === "BTN_CONFIRMAR_FINAL") {
+            const financieros = calcularTotalesFinales(
+              cart.items,
+              cart.tempData.deliveryMode,
+              restaurante,
+            );
+            const pedidoFinal = await processFinalOrder(
+              userId,
+              cart,
+              businessId,
+              auth,
+              financieros,
+            );
+            if (pedidoFinal) notifyDashboard(businessId, pedidoFinal);
+            return;
+          }
+
+          if (actionId?.startsWith("REMOVE_IDX_")) {
+            const index = parseInt(actionId.split("_")[2]);
+            const removedName = cart.items[index]?.nombre;
+            await removeItemsByName(userId, businessId, removedName);
+            await sendWhatsAppNotification(
+              userId,
+              `✅ Eliminado: *${removedName}*`,
+              auth,
+            );
+            const updatedCart = await getOrCreateCart(userId, businessId);
+            return await enviarBotonesContinuar(
+              userId,
+              "¿Deseas algo más?",
+              auth,
+              updatedCart,
+            );
+          }
+
+          if (actionId?.startsWith("MODE_"))
+            cart.tempData.deliveryMode =
+              actionId === "MODE_DELIVERY" ? "DELIVERY" : "PICKUP";
+          if (actionId?.startsWith("PAYMENT_"))
+            cart.tempData.paymentMethod = actionId
+              .replace("PAYMENT_", "")
+              .replace(/_/g, " ");
+
+          await updateCart(userId, businessId, { tempData: cart.tempData });
+          return await ejecutarCheckoutInteligente(
+            userId,
+            businessId,
+            cart,
+            auth,
+            restaurante,
+          );
         }
 
-        // --- 🟡 FLUJO DIRECTO ---
-        if (source === 'DIRECTO') {
-            const { items, tempData, businessId: bId, costoEnvio } = job.data;
-            const itemIds = items.map(i => i.itemId);
-            const productosDB = await MenuItem.find({ _id: { $in: itemIds }, businessId: bId }).lean();
-            const itemsValidados = items.map(i => {
-                const p = productosDB.find(prod => prod._id.toString() === i.itemId.toString());
-                return p ? { itemId: p._id, nombre: p.nombre, precioUnitario: i.precioUnitario, cantidad: i.cantidad || 1, opcionesSeleccionadas: i.opcionesSeleccionadas || [], notas: i.notas || "" } : null;
-            }).filter(Boolean);
+        // --- 2. UBICACIÓN GPS ---
+        else if (messageObject.type === "location") {
+          const { latitude, longitude } = messageObject.location;
+          const [restLat, restLon] = restaurante.configuracion.ubicacionLocal
+            ?.split(",")
+            .map(Number) || [0, 0];
+          const distancia = calcularDistanciaKM(
+            latitude,
+            longitude,
+            restLat,
+            restLon,
+          );
+          const mapsLink = `https://www.google.com/maps?q=${latitude},${longitude}`;
 
-            const subtotal = itemsValidados.reduce((acc, i) => acc + (i.precioUnitario * i.cantidad), 0);
-            const envio = parseInt(costoEnvio) || 0;
-            const pedidoDirecto = new Pedido({ businessId: bId, source: 'DIRECTO', nombreCliente: tempData.name || 'Caja', telefonoCliente: 'MOSTRADOR', clienteId: 'WALK-IN', direccionEntrega: tempData.address || 'TIENDA', items: itemsValidados, subtotal, costoEnvio: envio, total: subtotal + envio, metodoPago: tempData.paymentMethod || 'Efectivo', entregaMode: 'PICKUP', estado: (tempData.paymentMethod.toUpperCase() === 'TRANSFERENCIA') ? 'Pendiente de Pago' : 'Confirmado' });
-            await pedidoDirecto.save();
-            await MenuItem.bulkWrite(itemsValidados.map(i => ({ updateOne: { filter: { _id: i.itemId }, update: { $inc: { vendidas_hoy: i.cantidad } } } })));
-            notifyDashboard(bId, pedidoDirecto);
+          if (distancia > 5) {
+            await sendWhatsAppNotification(
+              userId,
+              `📍 Estás a ${distancia.toFixed(1)}km. Solo entregamos a 5km. He marcado para *Recoger en Tienda* 🛍️`,
+              auth,
+            );
+            await updateCart(userId, businessId, {
+              tempData: {
+                ...cart.tempData,
+                deliveryMode: "PICKUP",
+                address: "GPS: " + mapsLink,
+              },
+            });
+          } else {
+            await sendWhatsAppNotification(
+              userId,
+              "📍 Ubicación guardada con éxito. 🛵",
+              auth,
+            );
+            await updateCart(userId, businessId, {
+              tempData: {
+                ...cart.tempData,
+                deliveryMode: "DELIVERY",
+                address: mapsLink,
+              },
+            });
+          }
+          cart = await getOrCreateCart(userId, businessId);
+          return await ejecutarCheckoutInteligente(
+            userId,
+            businessId,
+            cart,
+            auth,
+            restaurante,
+          );
         }
 
-    } catch (e) { console.error("❌ [Worker Error] Fallo crítico:", e.message); }
-}, { connection });
+        // --- 3. IMÁGENES (COMPROBANTES) ---
+        else if (messageObject.type === "image") {
+          if (cart.conversationState === "ESPERANDO_COMPROBANTE") {
+            const pedido = await Pedido.findOne({
+              telefonoCliente: userId,
+              estado: "Pendiente de Pago",
+            }).sort({ createdAt: -1 });
+            if (pedido) {
+              pedido.comentarios += " | [SISTEMA: Comprobante enviado]";
+              await pedido.save();
+              notifyDashboard(businessId, pedido);
+              await updateCart(userId, businessId, {
+                conversationState: "POST_VENTA",
+              });
+              return await sendWhatsAppNotification(
+                userId,
+                "¡Gracias! He recibido tu comprobante. 📸 Un agente lo validará pronto. 😊",
+                auth,
+              );
+            }
+          }
+          return await sendWhatsAppNotification(
+            userId,
+            "¡Gracias por la imagen! Si necesitas pedir algo, solo dime. 🍔",
+            auth,
+          );
+        }
 
-orderWorker.on('completed', job => console.log(`✅ [Worker] Tarea completada: ${job.id}`));
+        // --- 4. TEXTO / IA ---
+        // --- 4. TEXTO / IA ---
+        else {
+          const text = (messageObject.text?.body || "").trim();
+          const menuMap = cart.tempData.menuMap || [];
+
+          let semanticResult;
+
+          try {
+            semanticResult = await processSemanticMessage({
+              text,
+              menuMap,
+              cart,
+            });
+          } catch (err) {
+            console.error("[Semantic] Error:", err.message);
+
+            semanticResult = {
+              semanticItems: [],
+              operations: [],
+              references: [],
+              contextReference: null,
+            };
+          }
+
+          const {
+            semanticItems = [],
+            operations = [],
+            references = [],
+            contextReference = null,
+          } = semanticResult || {};
+
+          // ---------------------------------------------------
+          // FALLBACK CONTEXTUAL (ej: "lo mismo", "ese", etc.)
+          // ---------------------------------------------------
+          let finalSemanticItems = [...semanticItems];
+
+          if (
+            finalSemanticItems.length === 0 &&
+            contextReference?.productName
+          ) {
+            finalSemanticItems.push({
+              action: "add",
+              productName: contextReference.productName,
+              quantity: 1,
+            });
+
+            console.log(
+              "[Semantic] Context fallback aplicado:",
+              finalSemanticItems,
+            );
+          }
+
+          // ---------------------------------------------------
+          // IA / INTENCIÓN (sin variables fantasma)
+          // ---------------------------------------------------
+          const context = {
+            businessId,
+            restauranteConfig,
+            menuMap,
+            cartState: cart.conversationState,
+            lastProductDiscussed: cart.tempData.lastProductDiscussed || null,
+          };
+
+          let aiResponse;
+
+          try {
+            aiResponse = await getIntention(text, context, {
+              references,
+              operations,
+            });
+          } catch (err) {
+            console.error("[AI] Error getIntention:", err.message);
+
+            aiResponse = {
+              items: [],
+              extractedData: {},
+              waiterMessage:
+                "No pude interpretar tu pedido, pero puedes intentar de nuevo o ver el menú 📋",
+            };
+          }
+
+          // ---------------------------------------------------
+          // INFERENCIA DE DATOS
+          // ---------------------------------------------------
+          const updatedData = applyInference(
+            aiResponse.extractedData || {},
+            cart.tempData || {},
+          );
+
+          await updateCart(userId, businessId, {
+            tempData: updatedData,
+          });
+
+          // ---------------------------------------------------
+          // ITEMS FINALES (semantic > AI fallback)
+          // ---------------------------------------------------
+          const finalItems =
+            finalSemanticItems.length > 0
+              ? finalSemanticItems
+              : aiResponse.items || [];
+
+          const { cart: finalCart, alerts } = await processCartActions(
+            userId,
+            businessId,
+            finalItems,
+          );
+
+          // ---------------------------------------------------
+          // MENSAJE FINAL
+          // ---------------------------------------------------
+          const mensajeFinal =
+            (aiResponse.waiterMessage || "Aquí tienes tu pedido 🍔") +
+            (alerts ? `\n\n${alerts}` : "");
+
+          // ---------------------------------------------------
+          // ACTUALIZAR HISTORIAL (SAFE)
+          // ---------------------------------------------------
+          const history = Array.isArray(cart.tempData?.history)
+            ? cart.tempData.history
+            : [];
+
+          await updateCart(userId, businessId, {
+            conversationState: "MOSTRANDO_MENU",
+            tempData: {
+              ...updatedData,
+              history: [
+                ...history,
+                { role: "user", content: text },
+                { role: "assistant", content: mensajeFinal },
+              ].slice(-6),
+              lastProductDiscussed:
+                aiResponse?.items?.[0]?.productName ||
+                cart.tempData?.lastProductDiscussed ||
+                null,
+            },
+          });
+
+          // ---------------------------------------------------
+          // RESPUESTA FINAL WHATSAPP
+          // ---------------------------------------------------
+          return await enviarBotonesContinuar(
+            userId,
+            mensajeFinal,
+            auth,
+            finalCart,
+          );
+        }
+      }
+
+      // --- 🟡 FLUJO DIRECTO ---
+      if (source === "DIRECTO") {
+        const { items, tempData, businessId: bId, costoEnvio } = job.data;
+        const itemIds = items.map((i) => i.itemId);
+        const productosDB = await MenuItem.find({
+          _id: { $in: itemIds },
+          businessId: bId,
+        }).lean();
+        const itemsValidados = items
+          .map((i) => {
+            const p = productosDB.find(
+              (prod) => prod._id.toString() === i.itemId.toString(),
+            );
+            return p
+              ? {
+                  itemId: p._id,
+                  nombre: p.nombre,
+                  precioUnitario: i.precioUnitario,
+                  cantidad: i.cantidad || 1,
+                  opcionesSeleccionadas: i.opcionesSeleccionadas || [],
+                  notas: i.notas || "",
+                }
+              : null;
+          })
+          .filter(Boolean);
+
+        const subtotal = itemsValidados.reduce(
+          (acc, i) => acc + i.precioUnitario * i.cantidad,
+          0,
+        );
+        const envio = parseInt(costoEnvio) || 0;
+        const pedidoDirecto = new Pedido({
+          businessId: bId,
+          source: "DIRECTO",
+          nombreCliente: tempData.name || "Caja",
+          telefonoCliente: "MOSTRADOR",
+          clienteId: "WALK-IN",
+          direccionEntrega: tempData.address || "TIENDA",
+          items: itemsValidados,
+          subtotal,
+          costoEnvio: envio,
+          total: subtotal + envio,
+          metodoPago: tempData.paymentMethod || "Efectivo",
+          entregaMode: "PICKUP",
+          estado:
+            tempData.paymentMethod.toUpperCase() === "TRANSFERENCIA"
+              ? "Pendiente de Pago"
+              : "Confirmado",
+        });
+        await pedidoDirecto.save();
+        await MenuItem.bulkWrite(
+          itemsValidados.map((i) => ({
+            updateOne: {
+              filter: { _id: i.itemId },
+              update: { $inc: { vendidas_hoy: i.cantidad } },
+            },
+          })),
+        );
+        notifyDashboard(bId, pedidoDirecto);
+      }
+    } catch (e) {
+      console.error("❌ [Worker Error] Fallo crítico:", e.message);
+    }
+  },
+  { connection },
+);
+
+orderWorker.on("completed", (job) =>
+  console.log(`✅ [Worker] Tarea completada: ${job.id}`),
+);
 export default orderWorker;
 </file>
 
@@ -2139,232 +3773,6 @@ export const createDirectOrder = async (req, res) => {
         res.status(202).json({ message: "Pedido en cola" });
     } catch (error) {
         res.status(500).json({ message: "Error interno" });
-    }
-};
-</file>
-
-<file path="src/models/MenuItem.js">
-// src/models/MenuItem.js
-import mongoose from 'mongoose';
-
-// 1. Esquema para opciones individuales (ej: "Extra Queso", "Pastor")
-const opcionSchema = new mongoose.Schema({
-    nombre: { type: String, required: true },
-    precioAdicional: { type: Number, default: 0 }, // En centavos
-    disponible: { type: Boolean, default: true }
-}, { _id: true });
-
-// 2. Esquema para grupos de modificadores (Jerarquía Universal)
-const grupoModificadoresSchema = new mongoose.Schema({
-    nombre: { type: String, required: true }, // Ej: "Escoge tu carne", "Ingredientes Extra"
-    
-    // REGLAS DE ORO DEL COMANDEO (Punto 1 y 3 del Roadmap)
-    minimo: { type: Number, default: 0 }, // 1 si es obligatorio (Ej: Tacos/Tamales)
-    maximo: { type: Number, default: 1 }, // Límite de lo incluido o permitido
-    
-    // ¿Qué pasa si el cliente pide más del máximo?
-    permiteExcedente: { type: Boolean, default: false }, 
-    // true: Se cobran como extras. false: Mateo dice "No se puede".
-
-    opciones: [opcionSchema]
-}, { _id: true });
-
-// 3. Esquema Principal de Producto
-const menuSchema = new mongoose.Schema({
-    businessId: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'Restaurante', 
-        required: true, 
-        index: true 
-    },
-    nombre: { type: String, required: true, trim: true },
-    descripcion: { type: String }, 
-    precioBase: { type: Number, required: true, min: 0 }, // Precio inicial (en centavos)
-    categoria: { type: String, default: 'general', index: true },
-    
-    // PILAR 1: ATRIBUTOS DINÁMICOS
-    tipoProducto: { 
-        type: String, 
-        enum: ['simple', 'con_variantes', 'compuesto'], 
-        default: 'simple' 
-    },
-    modificadores: [grupoModificadoresSchema],
-
-    // PILAR 2: LÓGICA TEMPORAL (Disponibilidad por día)
-    diasDisponibles: { 
-        type: [Number], 
-        default: [0, 1, 2, 3, 4, 5, 6] 
-    },
-
-    // Stock y Control (Punto 4 del Roadmap)
-    disponible: { type: Boolean, default: true },
-    cantidad_diaria: { type: Number, default: 99 },
-    vendidas_hoy: { type: Number, default: 0 },
-    
-    // 🌟 NUEVO CAMPO: Umbral para avisar al dueño que el producto se va a agotar
-    alerta_en: { type: Number, default: 5 }, 
-    
-    activo: { type: Boolean, default: true }
-}, { timestamps: true });
-
-// Evitar errores de re-compilación de modelos en desarrollo
-export default mongoose.models.MenuItem || mongoose.model('MenuItem', menuSchema);
-</file>
-
-<file path="src/routes/order.routes.js">
-// src/routes/order.routes.js
-import express from 'express';
-import { verificarToken } from '../middleware/auth.middleware.js';
-// 🛑 ASEGÚRATE DE QUE ESTÉ EN ESTA LISTA 🛑
-import { 
-    getActiveOrders, 
-    updateOrderStatus, 
-    createDirectOrder 
-} from '../controllers/order.controller.js';
-
-const router = express.Router();
-
-// 🛡️ Todas las rutas de abajo requieren token
-router.use(verificarToken); 
-
-router.get('/', getActiveOrders); 
-router.put('/:id/status', updateOrderStatus);
-router.post('/directo', createDirectOrder);
-
-export default router;
-</file>
-
-<file path="src/services/aiService.js">
-// src/services/aiService.js
-import { analizarPedidoConIA } from '../utils/aiUtils.js';
-
-/**
- * Servicio de Inteligencia: Traduce texto humano a intenciones de negocio.
- * Incluye traducción de índices y gestión de contexto post-venta.
- */
-export const getIntention = async (text, context) => {
-    const { 
-        history, 
-        menuMap, 
-        businessId, 
-        restauranteConfig, 
-        lastProductDiscussed, 
-        lastOrder, // 👈 Nuevo: Referencia al último pedido
-        cartState  // 👈 Nuevo: Estado actual de la conversación
-    } = context;
-
-    // 1. TRADUCTOR DE ÍNDICES (Lógica técnica agnóstica)
-    let processedText = text;
-    if (menuMap?.length > 0) {
-        const sortedMap = [...menuMap].sort((a, b) => b.index - a.index);
-        sortedMap.forEach(item => {
-            const regex = new RegExp(`\\b(la|el|del|n\\.?|#|numero|posicion)?\\s*${item.index}\\b`, 'gi');
-            const esSoloNumero = text.trim() === item.index.toString();
-            
-            if (regex.test(processedText) || esSoloNumero) {
-                processedText = esSoloNumero ? item.nombre : processedText.replace(regex, ` ${item.nombre} `);
-            }
-        });
-    }
-
-    console.log(`[aiService] Texto Original: "${text}" | Traducido: "${processedText}"`);
-
-    // 2. 🌟 INYECCIÓN DE CONTEXTO POST-VENTA (Luxury Continuity)
-    // Si el usuario está en fase de seguimiento, le damos instrucciones extra a Mateo
-    let promptModificado = restauranteConfig;
-    
-    if (cartState === 'POST_VENTA' || cartState === 'ESPERANDO_COMPROBANTE') {
-        const infoExtra = `
-        \n⚠️ [REGLA CRÍTICA DE CONTINUIDAD]:
-        - El pedido #${lastOrder?.numero_pedido || ''} ya fue entregado/cerrado.
-        - El carrito actual está COMPLETAMENTE VACÍO.
-        - NO asumas que el usuario quiere repetir productos del historial.
-        - Si el usuario envía comentarios, agradecimientos o quejas, NO agregues nada al carrito.
-        - SOLO agrega productos si el usuario los pide EXPLÍCITAMENTE por su nombre en este mensaje actual.
-        `;
-        promptModificado += infoExtra;
-    }
-
-    // 3. LLAMADA AL MOTOR DE IA (MATEO)
-    const aiResponse = await analizarPedidoConIA(
-        processedText, 
-        businessId, 
-        history, 
-        promptModificado, // 👈 Enviamos el prompt con el "secreto" de la venta reciente
-        lastProductDiscussed, 
-        menuMap
-    );
-
-    return aiResponse;
-};
-</file>
-
-<file path="src/services/menuService.js">
-// src/services/menuService.js
-// FIX: Caché migrada de Map() en proceso a Redis.
-//
-// El Map() anterior moría con el proceso y desincronizaba instancias en cluster.
-// Con Redis la caché es compartida: si el Admin actualiza el menú en el Dashboard,
-// el próximo mensaje de WhatsApp (incluso en otro proceso) verá el menú fresco.
-//
-// TTL: 60 segundos. Puedes ajustarlo con la variable MENU_CACHE_TTL en .env.
-import MenuItem from '../models/MenuItem.js';
-import { sessionAdapter } from '../config/redis.js';
-import logger from '../utils/logger.js';
-
-const TTL = parseInt(process.env.MENU_CACHE_TTL || '60', 10);
-
-/**
- * Obtiene el menú activo y disponible para hoy, con caché Redis compartida.
- * @param {string} businessId
- * @returns {Promise<Array>} Lista de MenuItems
- */
-export const getMenu = async (businessId) => {
-    if (!businessId) return [];
-
-    const cacheKey = `menu:${businessId}`;
-
-    try {
-        const cached = await sessionAdapter.get(cacheKey);
-        if (cached) return cached; // sessionAdapter ya hace JSON.parse
-    } catch {
-        logger.warn('[MenuService] Redis no disponible, consultando DB directamente');
-    }
-
-    try {
-        const diaActual = new Date().getDay();
-        const menu = await MenuItem.find({
-            businessId,
-            activo: true,
-            disponible: true,
-            diasDisponibles: diaActual,
-        }).lean();
-
-        try {
-            await sessionAdapter.set(cacheKey, menu, TTL);
-        } catch {
-            logger.warn('[MenuService] No se pudo guardar caché en Redis');
-        }
-
-        return menu;
-    } catch (error) {
-        logger.error('[MenuService] Error cargando menú:', error.message);
-        return [];
-    }
-};
-
-/**
- * Invalida la caché del menú de un negocio.
- * Llamar esto cuando el Admin guarda cambios en el catálogo.
- * @param {string} businessId
- */
-export const invalidateMenuCache = async (businessId) => {
-    if (!businessId) return;
-    try {
-        await sessionAdapter.del(`menu:${businessId}`);
-        logger.info(`[MenuService] Caché invalidada para negocio ${businessId}`);
-    } catch {
-        logger.warn('[MenuService] No se pudo invalidar caché de menú');
     }
 };
 </file>
@@ -2781,6 +4189,99 @@ export {
 };
 </file>
 
+<file path="src/services/aiService.js">
+// src/services/aiService.js
+import { analizarPedidoConIA } from "../utils/aiUtils.js";
+
+/**
+ * Servicio de Inteligencia: Traduce texto humano a intenciones de negocio.
+ * Incluye traducción de índices y gestión de contexto post-venta.
+ */
+export const getIntention = async (text, context, semanticData = {}) => {
+  const {
+    history,
+    menuMap,
+    businessId,
+    restauranteConfig,
+    lastProductDiscussed,
+    lastOrder, // 👈 Nuevo: Referencia al último pedido
+    cartState, // 👈 Nuevo: Estado actual de la conversación
+  } = context;
+
+  // NUEVO:
+  // Si el nuevo motor semántico ya entendió el mensaje,
+  // evitamos usar el traductor legacy destructivo.
+
+  const skipLegacyTranslator = semanticData?.operations?.length > 0;
+
+  // 1. TRADUCTOR DE ÍNDICES (Lógica técnica agnóstica)
+  let processedText = text;
+  if (menuMap?.length > 0 && !skipLegacyTranslator) {
+    const sortedMap = [...menuMap].sort((a, b) => b.index - a.index);
+    sortedMap.forEach((item) => {
+      const regex = new RegExp(
+        `\\b(la|el|del|n\\.?|#|numero|posicion)?\\s*${item.index}\\b`,
+        "gi",
+      );
+      const esSoloNumero = text.trim() === item.index.toString();
+
+      if (regex.test(processedText) || esSoloNumero) {
+        processedText = esSoloNumero
+          ? item.nombre
+          : processedText.replace(regex, ` ${item.nombre} `);
+      }
+    });
+  }
+
+  console.log(
+    `[aiService] Texto Original: "${text}" | Traducido: "${processedText}"`,
+  );
+
+  // =====================================================
+  // BYPASS IA SI EL SEMANTIC ENGINE YA ENTENDIÓ
+  // =====================================================
+
+  if (semanticData?.operations?.length > 0) {
+    console.log("[aiService] Semantic Engine tomó prioridad. IA omitida.");
+
+    return {
+      items: [],
+      status: "SEMANTIC_OK",
+      waiterMessage: null,
+      extractedData: {},
+    };
+  }
+
+  // 2. 🌟 INYECCIÓN DE CONTEXTO POST-VENTA (Luxury Continuity)
+  // Si el usuario está en fase de seguimiento, le damos instrucciones extra a Mateo
+  let promptModificado = restauranteConfig;
+
+  if (cartState === "POST_VENTA" || cartState === "ESPERANDO_COMPROBANTE") {
+    const infoExtra = `
+        \n⚠️ [REGLA CRÍTICA DE CONTINUIDAD]:
+        - El pedido #${lastOrder?.numero_pedido || ""} ya fue entregado/cerrado.
+        - El carrito actual está COMPLETAMENTE VACÍO.
+        - NO asumas que el usuario quiere repetir productos del historial.
+        - Si el usuario envía comentarios, agradecimientos o quejas, NO agregues nada al carrito.
+        - SOLO agrega productos si el usuario los pide EXPLÍCITAMENTE por su nombre en este mensaje actual.
+        `;
+    promptModificado += infoExtra;
+  }
+
+  // 3. LLAMADA AL MOTOR DE IA (MATEO)
+  const aiResponse = await analizarPedidoConIA(
+    processedText,
+    businessId,
+    history,
+    promptModificado, // 👈 Enviamos el prompt con el "secreto" de la venta reciente
+    lastProductDiscussed,
+    menuMap,
+  );
+
+  return aiResponse;
+};
+</file>
+
 <file path="src/models/Pedido.js">
 // src/models/Pedido.js
 // FIX: Se agrega índice compuesto { businessId, estado } para la consulta
@@ -2864,11 +4365,11 @@ export default mongoose.model('Pedido', pedidoSchema);
 
 <file path="src/utils/aiUtils.js">
 // src/utils/aiUtils.js
-import logger from './logger.js';
-import MenuItem from '../models/MenuItem.js';
-import OpenAI from 'openai'; 
-import dotenv from 'dotenv';
-import mongoose from 'mongoose';
+import logger from "./logger.js";
+import MenuItem from "../models/MenuItem.js";
+import OpenAI from "openai";
+import dotenv from "dotenv";
+import mongoose from "mongoose";
 
 dotenv.config();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -2877,64 +4378,85 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
  * Motor de IA: Extrae intenciones de compra y datos de envío.
  * Aplica filtrado inteligente de catálogo para optimizar tokens y precisión.
  */
-export const analizarPedidoConIA = async (text, businessId, history = [], restauranteConfig = "", lastProductDiscussed = null, menuMap = []) => {
-    try {
-        const bId = new mongoose.Types.ObjectId(businessId);
+export const analizarPedidoConIA = async (
+  text,
+  businessId,
+  history = [],
+  restauranteConfig = "",
+  lastProductDiscussed = null,
+  menuMap = [],
+) => {
+  try {
+    const bId = new mongoose.Types.ObjectId(businessId);
 
-        // --- 1. FILTRADO INTELIGENTE DEL CATÁLOGO ---
-        
-        // Limpiamos y extraemos palabras clave manejando plurales de forma agnóstica
-        const palabrasClave = text.toLowerCase()
-            .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "") 
-            .split(/\s+/)
-            .flatMap(p => {
-                // Si la palabra es larga y termina en 's', buscamos también el singular
-                if (p.endsWith('s') && p.length > 3) return [p, p.slice(0, -1)];
-                return [p];
-            })
-            .filter(p => p.length > 2);
+    // --- 1. FILTRADO INTELIGENTE DEL CATÁLOGO ---
 
-        if (lastProductDiscussed) palabrasClave.push(lastProductDiscussed.toLowerCase());
+    // Limpiamos y extraemos palabras clave manejando plurales de forma agnóstica
+    const palabrasClave = text
+      .toLowerCase()
+      .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "")
+      .split(/\s+/)
+      .flatMap((p) => {
+        // Si la palabra es larga y termina en 's', buscamos también el singular
+        if (p.endsWith("s") && p.length > 3) return [p, p.slice(0, -1)];
+        return [p];
+      })
+      .filter((p) => p.length > 2);
 
-        const regexBusqueda = palabrasClave.map(k => new RegExp(k, 'i'));
+    if (lastProductDiscussed)
+      palabrasClave.push(lastProductDiscussed.toLowerCase());
 
-        // Búsqueda inicial en la DB
-        let menuItems = await MenuItem.find({ 
-            businessId: bId, 
-            activo: true,
-            $or: [
-                { nombre: { $in: regexBusqueda } },
-                { categoria: { $in: regexBusqueda } }
-            ]
-        }).lean();
+    const regexBusqueda = palabrasClave.map((k) => new RegExp(k, "i"));
 
-        // 🌟 REFUERZO TOP-TIER: Si el filtro es muy restrictivo (< 5 productos),
-        // cargamos productos adicionales para dar contexto a la IA.
-        if (menuItems.length < 5) {
-            const extraItems = await MenuItem.find({ businessId: bId, activo: true }).limit(12).lean();
-            const mapaItems = new Map();
-            // Unimos resultados evitando duplicados por ID
-            [...menuItems, ...extraItems].forEach(item => mapaItems.set(item._id.toString(), item));
-            menuItems = Array.from(mapaItems.values());
-        }
+    // Búsqueda inicial en la DB
+    let menuItems = await MenuItem.find({
+      businessId: bId,
+      activo: true,
+      $or: [
+        { nombre: { $in: regexBusqueda } },
+        { categoria: { $in: regexBusqueda } },
+      ],
+    }).lean();
 
-        logger.info(`[SaaS] Contexto IA cargado: ${menuItems.length} productos disponibles.`);
-        
-        // --- 2. CONSTRUCCIÓN DEL CATÁLOGO PARA LA IA (Anclaje Semántico) ---
-        const menuSimplified = menuItems.map((item) => {
-            const mapping = (menuMap || []).find(m => m.itemId.toString() === item._id.toString());
-            // El número es parte del nombre para que la IA haga match natural
-            const prefix = mapping ? `${mapping.index}. ` : "";
+    // 🌟 REFUERZO TOP-TIER: Si el filtro es muy restrictivo (< 5 productos),
+    // cargamos productos adicionales para dar contexto a la IA.
+    if (menuItems.length < 5) {
+      const extraItems = await MenuItem.find({ businessId: bId, activo: true })
+        .limit(12)
+        .lean();
+      const mapaItems = new Map();
+      // Unimos resultados evitando duplicados por ID
+      [...menuItems, ...extraItems].forEach((item) =>
+        mapaItems.set(item._id.toString(), item),
+      );
+      menuItems = Array.from(mapaItems.values());
+    }
 
-            const mods = item.modificadores?.map(m => 
-                `${m.nombre}: ${m.opciones.map(o => o.nombre).join(', ')}`
-            ).join(' | ');
-            
-            return `- PRODUCTO: "${prefix}${item.nombre}" | PRECIO: $${item.precioBase} ${mods ? `| EXTRAS: ${mods}` : ''}`;
-        }).join('\n');
+    logger.info(
+      `[SaaS] Contexto IA cargado: ${menuItems.length} productos disponibles.`,
+    );
 
-        // --- 3. CONSTRUCCIÓN DEL SYSTEM PROMPT ---
-        const systemPrompt = `Eres Mateo, el asistente virtual del negocio.
+    // --- 2. CONSTRUCCIÓN DEL CATÁLOGO PARA LA IA (Anclaje Semántico) ---
+    const menuSimplified = menuItems
+      .map((item) => {
+        const mapping = (menuMap || []).find(
+          (m) => m.itemId.toString() === item._id.toString(),
+        );
+        // El número es parte del nombre para que la IA haga match natural
+        const prefix = mapping ? `${mapping.index}. ` : "";
+
+        const mods = item.modificadores
+          ?.map(
+            (m) => `${m.nombre}: ${m.opciones.map((o) => o.nombre).join(", ")}`,
+          )
+          .join(" | ");
+
+        return `- PRODUCTO: "${prefix}${item.nombre}" | PRECIO: $${item.precioBase} ${mods ? `| EXTRAS: ${mods}` : ""}`;
+      })
+      .join("\n");
+
+    // --- 3. CONSTRUCCIÓN DEL SYSTEM PROMPT ---
+    const systemPrompt = `Eres Mateo, el asistente virtual del negocio.
         Tu personalidad es amable, concisa y profesional.
 
         OBJETIVO: Convertir el mensaje del cliente en un JSON basado ÚNICAMENTE en el catálogo.
@@ -2943,20 +4465,24 @@ export const analizarPedidoConIA = async (text, businessId, history = [], restau
         ${restauranteConfig}
 
         REGLAS TÉCNICAS (INMUTABLES):
-            1. CONTEXTO: Hablamos de: "${lastProductDiscussed || 'nada aún'}". Úsalo para referencias como "ese" o "sí".
+            1. CONTEXTO: Hablamos de: "${lastProductDiscussed || "nada aún"}". Úsalo para referencias como "ese" o "sí".
             2. ATRIBUCIÓN: Cualquier detalle o extra DEBE guardarse dentro del objeto de ese producto.
             3. NOTAS GLOBALES: Usa 'notasCocina' o 'notasPago' solo para instrucciones que afecten a TODO el pedido (ej: "traer cambio", "tocar timbre").
-            4. RESPUESTA HUMANA (waiterMessage): 
-               - Si agregas (ADD): "He anotado tu [Producto]".
-               - Si quitas (REMOVE): "Listo, ya quité el/la [Producto]".
-               - NUNCA uses "lamentablemente" para confirmar una eliminación.
-               - Sé breve. Ejemplo: "He quitado la pizza y anotado tus 2 hamburguesas. ¿Algo más?".
+4. RESPUESTA HUMANA (waiterMessage):
+- Si el usuario agrega un producto con modificaciones culinarias,
+  responde como:
+  "He anotado tu hamburguesa sin cebolla."
+- No menciones REMOVE salvo que el usuario realmente haya pedido eliminar un producto del carrito.
             5. MAPEO SEMÁNTICO: Si el detalle coincide con un modificador del catálogo, úsalo en 'modifiers'. Si es preparación (ej: "bien cocido"), úsalo en 'notes'.
             6. UNICIDAD: El array 'items' debe contener solo los CAMBIOS del último mensaje. No repitas lo confirmado.
             7. IDENTIDAD: Extrae nombres de personas reales, no de productos.
             8. ACCIONES: Cada ítem DEBE llevar su propia 'action' (ADD o REMOVE).
-            9. CAMBIOS: Si el usuario cambia X por Y, envía X como REMOVE e Y como ADD.
-            10. STOCK: Si el historial dice "solo quedan X", y el usuario dice "sí" o "ok", usa esa cantidad exacta.
+9. CAMBIOS:
+- Solo usa REMOVE si el usuario explícitamente pide quitar un producto completo del carrito.
+- Frases como "sin cebolla", "sin mayonesa", "con queso", "extra tocino"
+  NO significan REMOVE.
+- Esos cambios deben ir dentro de modifiers o notes del MISMO producto.
+- Nunca elimines automáticamente un producto solo porque el usuario cambió ingredientes.            10. STOCK: Si el historial dice "solo quedan X", y el usuario dice "sí" o "ok", usa esa cantidad exacta.
             11. LOGÍSTICA: Si el usuario dice "cambiar a recoger", marca 'modoEntrega': 'PICKUP' y deja 'direccion': null.
             12. QUEJAS: Si hay quejas (ej: "faltó algo"), no vendas. Pide disculpas y di que un humano lo revisará.
             13. ATRIBUTOS: No apliques "light" o "frío" de un pedido anterior a uno nuevo automáticamente. Pregunta si hay duda.
@@ -2986,143 +4512,207 @@ export const analizarPedidoConIA = async (text, businessId, history = [], restau
           }
         }`;
 
-        // --- 4. LLAMADA A OPENAI ---
-        const response = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
-            messages: [
-                { role: "system", content: systemPrompt },
-                ...history.slice(-6),
-                { role: "user", content: text }
-            ],
-            response_format: { type: "json_object" },
-            temperature: 0,
-        });
-    
-        const resJSON = JSON.parse(response.choices[0].message.content);
-        
-        // Limpieza de seguridad
-        if (resJSON.items) {
-            resJSON.items = resJSON.items.filter(i => i.productName && i.productName !== "null");
-        }
+    // --- 4. LLAMADA A OPENAI ---
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: systemPrompt },
+        ...history.slice(-6),
+        { role: "user", content: text },
+      ],
+      response_format: { type: "json_object" },
+      temperature: 0,
+    });
 
-        return resJSON;
+    const resJSON = JSON.parse(response.choices[0].message.content);
 
-    } catch (error) {
-        logger.error(`Error en IA Motor: ${error.message}`);
-        return { items: [], status: "ERROR", waiterMessage: "Disculpa, ¿puedes repetirlo?" };
+    // Limpieza de seguridad
+    if (resJSON.items) {
+      resJSON.items = resJSON.items.filter(
+        (i) => i.productName && i.productName !== "null",
+      );
     }
+
+    return resJSON;
+  } catch (error) {
+    logger.error(`Error en IA Motor: ${error.message}`);
+    return {
+      items: [],
+      status: "ERROR",
+      waiterMessage: "Disculpa, ¿puedes repetirlo?",
+    };
+  }
 };
 </file>
 
 <file path="src/whatsapp/orderProcessor.js">
 // src/whatsapp/orderProcessor.js
-import Pedido from '../models/Pedido.js';
-import ShoppingCart from '../models/ShoppingCart.js';
-import Restaurante from '../models/Restaurante.js'; 
-import MenuItem from '../models/MenuItem.js'; 
-import { sendMessage, formatPrice } from './utils.js';
-import logger from '../utils/logger.js';
+import Pedido from "../models/Pedido.js";
+import ShoppingCart from "../models/ShoppingCart.js";
+import Restaurante from "../models/Restaurante.js";
+import MenuItem from "../models/MenuItem.js";
+import { sendMessage, formatPrice } from "./utils.js";
+import logger from "../utils/logger.js";
 
-export const processFinalOrder = async (userId, cart, businessId, auth, financieros) => {
+export const processFinalOrder = async (
+  userId,
+  cart,
+  businessId,
+  auth,
+  financieros,
+) => {
+  try {
+    const { items, tempData } = cart;
+    const restaurante = await Restaurante.findById(businessId).lean();
+
+    // 1. NORMALIZACIÓN DE IDENTIDAD
+    const nombreCliente =
+      tempData.name && tempData.name !== "null"
+        ? tempData.name
+        : "Cliente WhatsApp";
+    const metodoPago = (tempData.paymentMethod || "Efectivo").toUpperCase();
+    const esTransferencia = metodoPago === "TRANSFERENCIA";
+
+    // 2. CREAR EL PEDIDO (Estado inicial depende del pago)
+    const nuevoPedido = new Pedido({
+      businessId: businessId,
+      telefonoCliente: userId,
+      clienteId: userId,
+      nombreCliente: nombreCliente,
+      direccionEntrega: financieros.esPickup
+        ? "ENTREGA EN TIENDA"
+        : tempData.address || "No especificada",
+      comentarios: [tempData.notasPago, tempData.orderNotes]
+        .filter(Boolean)
+        .join(" - "),
+      items: items.map((item) => ({
+        itemId: item.itemId,
+        nombre: item.nombre,
+        precioUnitario: item.precioUnitario,
+        cantidad: item.cantidad || 1,
+        opcionesSeleccionadas: item.opcionesSeleccionadas || [],
+        notas: item.notas || "",
+      })),
+      subtotal: financieros.subtotal,
+      costoEnvio: financieros.envio,
+      total: financieros.total,
+      metodoPago: tempData.paymentMethod || "Efectivo",
+      entregaMode: financieros.esPickup ? "PICKUP" : "DELIVERY",
+      // 💰 Si es transferencia, entra como "Pendiente de Pago"
+      estado: esTransferencia ? "Pendiente de Pago" : "Pendiente",
+    });
+
+    await nuevoPedido.save();
+
+    // 3. ACTUALIZACIÓN ATÓMICA DE STOCK
     try {
-        const { items, tempData } = cart;
-        const restaurante = await Restaurante.findById(businessId).lean();
-
-        // 1. NORMALIZACIÓN DE IDENTIDAD
-        const nombreCliente = (tempData.name && tempData.name !== 'null') ? tempData.name : 'Cliente WhatsApp';
-        const metodoPago = (tempData.paymentMethod || 'Efectivo').toUpperCase();
-        const esTransferencia = metodoPago === 'TRANSFERENCIA';
-
-        // 2. CREAR EL PEDIDO (Estado inicial depende del pago)
-        const nuevoPedido = new Pedido({
-            businessId: businessId,
-            telefonoCliente: userId,
-            clienteId: userId, 
-            nombreCliente: nombreCliente,
-            direccionEntrega: financieros.esPickup ? 'RECOGIDA EN TIENDA' : (tempData.address || 'No especificada'),
-            comentarios: [tempData.notasPago, tempData.orderNotes].filter(Boolean).join(" - "), 
-            items: items.map(item => ({
-                itemId: item.itemId,
-                nombre: item.nombre,
-                precioUnitario: item.precioUnitario,
-                cantidad: item.cantidad || 1,
-                opcionesSeleccionadas: item.opcionesSeleccionadas || [],
-                notas: item.notas || "" 
-            })),
-            subtotal: financieros.subtotal,
-            costoEnvio: financieros.envio, 
-            total: financieros.total,
-            metodoPago: tempData.paymentMethod || 'Efectivo',
-            entregaMode: financieros.esPickup ? 'PICKUP' : 'DELIVERY',
-            // 💰 Si es transferencia, entra como "Pendiente de Pago"
-            estado: esTransferencia ? 'Pendiente de Pago' : 'Pendiente', 
-        });
-
-        await nuevoPedido.save();
-
-        // 3. ACTUALIZACIÓN ATÓMICA DE STOCK
-        try {
-            const bulkOps = nuevoPedido.items.map(item => ({
-                updateOne: {
-                    filter: { _id: item.itemId },
-                    update: { $inc: { vendidas_hoy: item.cantidad } }
-                }
-            }));
-            if (bulkOps.length > 0) await MenuItem.bulkWrite(bulkOps);
-        } catch (stockError) {
-            logger.error(`[Stock Error] Pedido #${nuevoPedido.numero_pedido}: ${stockError.message}`);
-        }
-
-        // 4. 🌟 SOFT RESET (MEMORIA POST-VENTA)
-        // En lugar de borrar, limpiamos lo operativo pero mantenemos la conversación
-         await ShoppingCart.updateOne(
-            { whatsappId: userId, businessId: businessId },
-            { 
-                $set: { 
-                    items: [],          // 🗑️ Vaciamos la bolsa física
-                    totalCents: 0,      // 💰 Reseteamos el dinero
-                    conversationState: esTransferencia ? 'ESPERANDO_COMPROBANTE' : 'POST_VENTA',
-                    tempData: {
-                    ...tempData,
-                    history: tempData.history.slice(-4), // Mantenemos solo un poco de memoria
-                    lastProductDiscussed: null, // 👈 VITAL: Borrar el ancla
-                    deliveryMode: null,
-                    address: null,
-                    paymentMethod: null
-                    }
-                }
-            }
-        );
-        logger.info(`[SaaS] Sesión evolucionada a POST_VENTA para ${userId}`);
-        //logger.info(`[SaaS] Sesión evolucionada a ${esTransferencia ? 'ESPERANDO_COMPROBANTE' : 'POST_VENTA'} para ${userId}`);
-
-        // 5. CONSTRUCCIÓN DEL MENSAJE (Luxury Experience)
-        const idPedido = nuevoPedido.numero_pedido;
-        let confirmText = `✅ *¡PEDIDO REGISTRADO! (#${idPedido})*\n\n`;
-        confirmText += `Gracias *${nombreCliente}*, hemos recibido tu solicitud.\n`;
-        confirmText += `\n💰 *Total:* ${formatPrice(financieros.total)}`;
-        confirmText += `\n💳 *Pago:* ${nuevoPedido.metodoPago}`;
-        confirmText += `\n📍 *Entrega:* ${nuevoPedido.direccionEntrega}\n`;
-
-        if (esTransferencia) {
-            const infoBanco = restaurante.configuracion?.datosTransferencia || "Consultar datos con el establecimiento.";
-            confirmText += `\n━━━━━━━━━━━━━━\n*POR FAVOR ENVÍA TU COMPROBANTE:* \n${infoBanco}\n━━━━━━━━━━━━━━\n`;
-            confirmText += `\n_Una vez que envíes la foto del comprobante, validaremos tu pago para meter tu orden a cocina._ 📸`;
-        } else {
-            confirmText += financieros.esPickup 
-                ? "\nTe avisaremos por aquí cuando tu pedido esté listo para retirar. 🛍️"
-                : "\nTe avisaremos por aquí cuando el repartidor vaya en camino. 🛵";
-        }
-        
-        await sendMessage(userId, confirmText, auth);
-        return nuevoPedido;
-
-    } catch (error) {
-        logger.error(`Error FATAL en processFinalOrder:`, error);
-        await sendMessage(userId, "⚠️ Hubo un error al registrar tu pedido. Por favor, contacta al restaurante.", auth);
-        return null;
+      const bulkOps = nuevoPedido.items.map((item) => ({
+        updateOne: {
+          filter: { _id: item.itemId },
+          update: { $inc: { vendidas_hoy: item.cantidad } },
+        },
+      }));
+      if (bulkOps.length > 0) await MenuItem.bulkWrite(bulkOps);
+    } catch (stockError) {
+      logger.error(
+        `[Stock Error] Pedido #${nuevoPedido.numero_pedido}: ${stockError.message}`,
+      );
     }
+
+    // 4. 🌟 SOFT RESET (MEMORIA POST-VENTA)
+    // En lugar de borrar, limpiamos lo operativo pero mantenemos la conversación
+    await ShoppingCart.updateOne(
+      { whatsappId: userId, businessId: businessId },
+      {
+        $set: {
+          items: [], // 🗑️ Vaciamos la bolsa física
+          totalCents: 0, // 💰 Reseteamos el dinero
+          conversationState: esTransferencia
+            ? "ESPERANDO_COMPROBANTE"
+            : "POST_VENTA",
+          tempData: {
+            ...tempData,
+            history: tempData.history.slice(-4), // Mantenemos solo un poco de memoria
+            lastProductDiscussed: null, // 👈 VITAL: Borrar el ancla
+            deliveryMode: null,
+            address: null,
+            paymentMethod: null,
+          },
+        },
+      },
+    );
+    logger.info(`[SaaS] Sesión evolucionada a POST_VENTA para ${userId}`);
+    //logger.info(`[SaaS] Sesión evolucionada a ${esTransferencia ? 'ESPERANDO_COMPROBANTE' : 'POST_VENTA'} para ${userId}`);
+
+    // 5. CONSTRUCCIÓN DEL MENSAJE (Luxury Experience)
+    const idPedido = nuevoPedido.numero_pedido;
+    let confirmText = `✅ *¡PEDIDO REGISTRADO! (#${idPedido})*\n\n`;
+    confirmText += `Gracias *${nombreCliente}*, hemos recibido tu solicitud.\n`;
+    confirmText += `\n💰 *Total:* ${formatPrice(financieros.total)}`;
+    confirmText += `\n💳 *Pago:* ${nuevoPedido.metodoPago}`;
+    confirmText += `\n📍 *Entrega:* ${nuevoPedido.direccionEntrega}\n`;
+
+    if (esTransferencia) {
+      const infoBanco =
+        restaurante.configuracion?.datosTransferencia ||
+        "Consultar datos con el establecimiento.";
+      confirmText += `\n━━━━━━━━━━━━━━\n*POR FAVOR ENVÍA TU COMPROBANTE:* \n${infoBanco}\n━━━━━━━━━━━━━━\n`;
+      confirmText += `\n_Una vez que envíes la foto del comprobante, validaremos tu pago para meter tu orden a cocina._ 📸`;
+    } else {
+      confirmText += financieros.esPickup
+        ? "\nTe avisaremos por aquí cuando tu pedido esté listo para retirar. 🛍️"
+        : "\nTe avisaremos por aquí cuando el repartidor vaya en camino. 🛵";
+    }
+
+    await sendMessage(userId, confirmText, auth);
+    return nuevoPedido;
+  } catch (error) {
+    logger.error(`Error FATAL en processFinalOrder:`, error);
+    await sendMessage(
+      userId,
+      "⚠️ Hubo un error al registrar tu pedido. Por favor, contacta al restaurante.",
+      auth,
+    );
+    return null;
+  }
 };
+</file>
+
+<file path="package.json">
+{
+  "name": "restaurante-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "Bot de WhatsApp para restaurantes - SaaS multi-tenant con IA",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js"
+  },
+  "keywords": ["whatsapp", "bot", "restaurante", "node"],
+  "author": "romancp85",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.7",
+    "bcryptjs": "^3.0.3",
+    "bullmq": "^5.76.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.1",
+    "express-rate-limit": "^8.5.0",
+    "ioredis": "^5.10.1",
+    "jsonwebtoken": "^9.0.3",
+    "luxon": "^3.7.2",
+    "mongoose": "^8.7.2",
+    "mongoose-sequence": "^6.0.1",
+    "openai": "^6.10.0",
+    "socket.io": "^4.8.1",
+    "winston": "^3.18.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7"
+  }
+}
 </file>
 
 <file path="src/models/ShoppingCart.js">
@@ -3200,65 +4790,28 @@ const ShoppingCart = mongoose.model('ShoppingCart', shoppingCartSchema);
 export default ShoppingCart;
 </file>
 
-<file path="package.json">
-{
-  "name": "restaurante-whatsapp-bot",
-  "version": "1.0.0",
-  "description": "Bot de WhatsApp para restaurantes - SaaS multi-tenant con IA",
-  "main": "src/server.js",
-  "type": "module",
-  "scripts": {
-    "dev": "nodemon src/server.js",
-    "start": "node src/server.js"
-  },
-  "keywords": ["whatsapp", "bot", "restaurante", "node"],
-  "author": "romancp85",
-  "license": "MIT",
-  "dependencies": {
-    "axios": "^1.7.7",
-    "bcryptjs": "^3.0.3",
-    "bullmq": "^5.76.6",
-    "cors": "^2.8.5",
-    "dotenv": "^16.6.1",
-    "express": "^4.21.1",
-    "express-rate-limit": "^8.5.0",
-    "ioredis": "^5.10.1",
-    "jsonwebtoken": "^9.0.3",
-    "luxon": "^3.7.2",
-    "mongoose": "^8.7.2",
-    "mongoose-sequence": "^6.0.1",
-    "openai": "^6.10.0",
-    "socket.io": "^4.8.1",
-    "winston": "^3.18.3"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.7"
-  }
-}
-</file>
-
 <file path="src/whatsapp/cartUtils.js">
 // src/whatsapp/cartUtils.js
-import ShoppingCart from '../models/ShoppingCart.js';
-import MenuItem from '../models/MenuItem.js';
-import logger from '../utils/logger.js';
+import ShoppingCart from "../models/ShoppingCart.js";
+import MenuItem from "../models/MenuItem.js";
+import logger from "../utils/logger.js";
 
 /**
  * 1. Obtener o crear el carrito (Multi-tenant)
  */
 export const getOrCreateCart = async (whatsappId, businessId) => {
-    let cart = await ShoppingCart.findOne({ whatsappId, businessId });
-    if (!cart) {
-        cart = new ShoppingCart({
-            whatsappId,
-            businessId,
-            items: [],
-            totalCents: 0,
-            tempData: { history: [], menuMap: [] },
-        });
-        await cart.save();
-    }
-    return cart;
+  let cart = await ShoppingCart.findOne({ whatsappId, businessId });
+  if (!cart) {
+    cart = new ShoppingCart({
+      whatsappId,
+      businessId,
+      items: [],
+      totalCents: 0,
+      tempData: { history: [], menuMap: [] },
+    });
+    await cart.save();
+  }
+  return cart;
 };
 
 /**
@@ -3274,145 +4827,290 @@ export const getOrCreateCart = async (whatsappId, businessId) => {
  *   - No hay ventana de tiempo entre lectura y escritura
  */
 export const addItemToCart = async (whatsappId, businessId, itemDetails) => {
-    const { itemId, quantity, opcionesSeleccionadas, notas } = itemDetails;
+  const { itemId, quantity, opcionesSeleccionadas, notas, modifiers } =
+    itemDetails;
 
-    // Validación multi-tenant: el producto debe pertenecer a este negocio
-    const itemData = await MenuItem.findOne({ _id: itemId, businessId });
-    if (!itemData || !itemData.activo) {
-        logger.warn(`[CartUtils] Producto inválido o inactivo: ${itemId}`);
-        return { success: false, reason: 'PRODUCTO_NO_DISPONIBLE' };
-    }
+  // Validación multi-tenant: el producto debe pertenecer a este negocio
+  const itemData = await MenuItem.findOne({ _id: itemId, businessId });
+  if (!itemData || !itemData.activo) {
+    logger.warn(`[CartUtils] Producto inválido o inactivo: ${itemId}`);
+    return { success: false, reason: "PRODUCTO_NO_DISPONIBLE" };
+  }
 
-    // Calculamos cuánto lleva ya el usuario de este producto en su carrito
-    const cart = await getOrCreateCart(whatsappId, businessId);
-    const cantidadEnCarrito = cart.items
-        .filter(i => i.itemId.toString() === itemId.toString())
-        .reduce((acc, curr) => acc + curr.cantidad, 0);
+  // Calculamos cuánto lleva ya el usuario de este producto en su carrito
+  const cart = await getOrCreateCart(whatsappId, businessId);
+  const cantidadEnCarrito = cart.items
+    .filter((i) => i.itemId.toString() === itemId.toString())
+    .reduce((acc, curr) => acc + curr.cantidad, 0);
 
-    const stockDisponibleActual = itemData.cantidad_diaria - itemData.vendidas_hoy;
+  const stockDisponibleActual =
+    itemData.cantidad_diaria - itemData.vendidas_hoy;
 
-    if (cantidadEnCarrito + quantity > stockDisponibleActual) {
-        return {
-            success: false,
-            reason: 'SIN_STOCK',
-            disponible: stockDisponibleActual - cantidadEnCarrito,
-            name: itemData.nombre,
-        };
-    }
+  if (cantidadEnCarrito + quantity > stockDisponibleActual) {
+    return {
+      success: false,
+      reason: "SIN_STOCK",
+      disponible: stockDisponibleActual - cantidadEnCarrito,
+      name: itemData.nombre,
+    };
+  }
 
-    // FIX: Incremento atómico de vendidas_hoy con condición de stock.
-    // El operador $inc + condición en el filter hace la operación en un solo
-    // round-trip a MongoDB. Si otro proceso ya consumió el stock entre nuestra
-    // lectura y este update, la condición falla y devuelve null.
-    const maxVendidasPermitidas = itemData.cantidad_diaria - quantity;
-    const itemActualizado = await MenuItem.findOneAndUpdate(
-        {
-            _id: itemId,
-            businessId,
-            activo: true,
-            // Condición atómica: solo actualiza si el stock sigue siendo suficiente
-            vendidas_hoy: { $lte: maxVendidasPermitidas },
-        },
-        { $inc: { vendidas_hoy: quantity } },
-        { new: true }
+  // FIX: Incremento atómico de vendidas_hoy con condición de stock.
+  // El operador $inc + condición en el filter hace la operación en un solo
+  // round-trip a MongoDB. Si otro proceso ya consumió el stock entre nuestra
+  // lectura y este update, la condición falla y devuelve null.
+  const maxVendidasPermitidas = itemData.cantidad_diaria - quantity;
+  const itemActualizado = await MenuItem.findOneAndUpdate(
+    {
+      _id: itemId,
+      businessId,
+      activo: true,
+      // Condición atómica: solo actualiza si el stock sigue siendo suficiente
+      vendidas_hoy: { $lte: maxVendidasPermitidas },
+    },
+    { $inc: { vendidas_hoy: quantity } },
+    { new: true },
+  );
+
+  if (!itemActualizado) {
+    // Alguien más compró el stock entre nuestra lectura y el update
+    logger.warn(
+      `[CartUtils] Stock agotado en operación atómica para ${itemData.nombre}`,
     );
+    return {
+      success: false,
+      reason: "SIN_STOCK",
+      disponible: 0,
+      name: itemData.nombre,
+    };
+  }
 
-    if (!itemActualizado) {
-        // Alguien más compró el stock entre nuestra lectura y el update
-        logger.warn(`[CartUtils] Stock agotado en operación atómica para ${itemData.nombre}`);
-        return { success: false, reason: 'SIN_STOCK', disponible: 0, name: itemData.nombre };
-    }
-
-    // Precio final: base + modificadores
-    let precioFinalUnidad = itemData.precioBase;
-    if (opcionesSeleccionadas?.length > 0) {
-        precioFinalUnidad += opcionesSeleccionadas.reduce((t, opt) => t + (opt.precioExtra || 0), 0);
-    }
-
-    // Agrupar si mismo producto + mismas opciones + mismas notas
-    const itemIndex = cart.items.findIndex(i =>
-        i.itemId.toString() === itemId.toString() &&
-        JSON.stringify(i.opcionesSeleccionadas) === JSON.stringify(opcionesSeleccionadas) &&
-        (i.notas || '').trim() === (notas || '').trim()
+  // Precio final: base + modificadores
+  let precioFinalUnidad = itemData.precioBase;
+  if (opcionesSeleccionadas?.length > 0) {
+    precioFinalUnidad += opcionesSeleccionadas.reduce(
+      (t, opt) => t + (opt.precioExtra || 0),
+      0,
     );
+  }
 
-    if (itemIndex > -1) {
-        cart.items[itemIndex].cantidad += quantity;
-    } else {
-        cart.items.push({
-            itemId,
-            nombre: itemData.nombre,
-            precioUnitario: precioFinalUnidad,
-            cantidad: quantity,
-            opcionesSeleccionadas: opcionesSeleccionadas || [],
-            notas: notas || '',
-        });
-    }
+  // Agrupar si mismo producto + mismas opciones + mismas notas
+  const itemIndex = cart.items.findIndex(
+    (i) =>
+      i.itemId.toString() === itemId.toString() &&
+      JSON.stringify(i.opcionesSeleccionadas) ===
+        JSON.stringify(opcionesSeleccionadas) &&
+      (i.notas || "").trim() === (notas || "").trim() &&
+      JSON.stringify(i.modifiers || []) === JSON.stringify(modifiers || []),
+  );
 
-    cart.totalCents = cart.items.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
-    await cart.save();
+  if (itemIndex > -1) {
+    cart.items[itemIndex].cantidad += quantity;
+  } else {
+    console.log("[CartUtils] Guardando notas:", notas);
 
-    return { success: true, name: itemData.nombre, totalPrice: precioFinalUnidad * quantity };
+    cart.items.push({
+      itemId,
+      nombre: itemData.nombre,
+      precioUnitario: precioFinalUnidad,
+      cantidad: quantity,
+      opcionesSeleccionadas: opcionesSeleccionadas || [],
+      notas: notas || "",
+      modifiers: modifiers || [],
+    });
+  }
+
+  cart.totalCents = cart.items.reduce(
+    (acc, item) => acc + item.precioUnitario * item.cantidad,
+    0,
+  );
+  await cart.save();
+
+  return {
+    success: true,
+    name: itemData.nombre,
+    totalPrice: precioFinalUnidad * quantity,
+  };
 };
 
 /**
  * 3. Actualizar estado y metadatos del carrito
  */
 export const updateCart = async (whatsappId, businessId, updates) => {
-    const cart = await getOrCreateCart(whatsappId, businessId);
+  const cart = await getOrCreateCart(whatsappId, businessId);
 
-    if (updates.conversationState) cart.conversationState = updates.conversationState;
-    if (updates.tempData) {
-        cart.tempData = { ...cart.tempData, ...updates.tempData };
-        cart.markModified('tempData');
-    }
-    if (updates.items) {
-        cart.items = updates.items;
-        cart.totalCents = cart.items.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
-    }
+  if (updates.conversationState)
+    cart.conversationState = updates.conversationState;
+  if (updates.tempData) {
+    cart.tempData = { ...cart.tempData, ...updates.tempData };
+    cart.markModified("tempData");
+  }
+  if (updates.items) {
+    cart.items = updates.items;
+    cart.totalCents = cart.items.reduce(
+      (acc, item) => acc + item.precioUnitario * item.cantidad,
+      0,
+    );
+  }
 
-    await cart.save();
-    return cart;
+  await cart.save();
+  return cart;
 };
 
 /**
  * 4. Eliminar ítem por índice
  */
 export const removeItemByIndex = async (whatsappId, businessId, index) => {
-    const cart = await ShoppingCart.findOne({ whatsappId, businessId });
-    if (!cart || !cart.items[index]) return { success: false, reason: 'ITEM_NOT_FOUND' };
+  const cart = await ShoppingCart.findOne({ whatsappId, businessId });
+  if (!cart || !cart.items[index])
+    return { success: false, reason: "ITEM_NOT_FOUND" };
 
-    const removedName = cart.items[index].nombre;
-    cart.items.splice(index, 1);
-    cart.totalCents = cart.items.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
-    if (cart.items.length === 0) cart.conversationState = 'INICIO';
+  const removedName = cart.items[index].nombre;
+  cart.items.splice(index, 1);
+  cart.totalCents = cart.items.reduce(
+    (acc, item) => acc + item.precioUnitario * item.cantidad,
+    0,
+  );
+  if (cart.items.length === 0) cart.conversationState = "INICIO";
 
-    await cart.save();
-    return { success: true, removedName, empty: cart.items.length === 0 };
+  await cart.save();
+  return { success: true, removedName, empty: cart.items.length === 0 };
 };
 
 /**
  * 5. Eliminar ítems por nombre (para Mateo IA — acción REMOVE)
  */
-export const removeItemsByName = async (whatsappId, businessId, productName) => {
-    const cart = await ShoppingCart.findOne({ whatsappId, businessId });
-    if (!cart || cart.items.length === 0) return null;
+export const removeItemsByName = async (
+  whatsappId,
+  businessId,
+  productName,
+) => {
+  const cart = await ShoppingCart.findOne({ whatsappId, businessId });
+  if (!cart || cart.items.length === 0) return null;
 
-    const nombreBusqueda = productName.toLowerCase();
-    const itemsFiltrados = cart.items.filter(item => {
-        const itemNombre = item.nombre.toLowerCase();
-        return !itemNombre.includes(nombreBusqueda) && !nombreBusqueda.includes(itemNombre);
-    });
+  const nombreBusqueda = productName.toLowerCase();
+  const itemsFiltrados = cart.items.filter((item) => {
+    const itemNombre = item.nombre.toLowerCase();
+    return (
+      !itemNombre.includes(nombreBusqueda) &&
+      !nombreBusqueda.includes(itemNombre)
+    );
+  });
 
-    if (itemsFiltrados.length === cart.items.length) return cart;
+  if (itemsFiltrados.length === cart.items.length) return cart;
 
-    cart.items = itemsFiltrados;
-    cart.totalCents = cart.items.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
-    if (cart.items.length === 0) cart.conversationState = 'INICIO';
+  cart.items = itemsFiltrados;
+  cart.totalCents = cart.items.reduce(
+    (acc, item) => acc + item.precioUnitario * item.cantidad,
+    0,
+  );
+  if (cart.items.length === 0) cart.conversationState = "INICIO";
 
-    await cart.save();
-    return cart;
+  await cart.save();
+  return cart;
 };
+</file>
+
+<file path="src/server.js">
+// src/server.js
+import 'dotenv/config';
+
+// 🛑 GUARDIA DE ARRANQUE (Mantenemos la excelente idea de Claude)
+const REQUIRED_ENV = ['MONGODB_URI', 'JWT_SECRET', 'WHATSAPP_APP_SECRET', 'WHATSAPP_VERIFY_TOKEN'];
+const missingEnv = REQUIRED_ENV.filter(key => !process.env[key]);
+if (missingEnv.length > 0) {
+    console.error('❌ FATAL: Variables de entorno requeridas no definidas:', missingEnv);
+    process.exit(1);
+}
+
+import express from 'express';
+import { createServer } from 'http';
+import mongoose from 'mongoose';
+import cors from 'cors';
+import crypto from 'crypto';
+import rateLimit from 'express-rate-limit';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import logger from './utils/logger.js';
+import jwt from 'jsonwebtoken';
+import * as socketPkg from 'socket.io';
+
+// Importaciones de rutas
+import authRoutes from './routes/auth.routes.js';
+import menuRoutes from './routes/menu.routes.js';
+import orderRoutes from './routes/order.routes.js';
+import configRouter from './routes/config.routes.js';
+import webhookRouter from './whatsapp/webhook.js';
+
+const SocketServer = socketPkg.Server || socketPkg.default?.Server || socketPkg.default;
+const app = express();
+const httpServer = createServer(app);
+const PORT = process.env.PORT || 3000;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// 1. Configuración de Socket.io
+const io = new SocketServer(httpServer, {
+    cors: { origin: process.env.ALLOWED_ORIGIN || '*', methods: ['GET', 'POST'] },
+});
+
+// 🌟 SOLUCIÓN AL CÍRCULO VICIOSO:
+global.io = io; 
+
+io.use((socket, next) => {
+    const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+    if (!token) return next(new Error('authentication_error'));
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        socket.businessId = decoded.bid.toString();
+        next();
+    } catch { next(new Error('authentication_error')); }
+});
+
+io.on('connection', (socket) => {
+    socket.join(socket.businessId);
+    logger.info(`[Socket] Dashboard conectado a sala: ${socket.businessId}`);
+});
+
+// 2. Seguridad HMAC para Meta
+const verifyMetaSignature = (req, res, buf) => {
+    if (!req.originalUrl.startsWith('/webhook') || req.method !== 'POST') return;
+    const signature = req.headers['x-hub-signature-256'];
+    if (!signature) throw new Error('Firma HMAC ausente.');
+    const expectedHash = crypto.createHmac('sha256', process.env.WHATSAPP_APP_SECRET).update(buf).digest('hex');
+    const received = signature.split('=')[1];
+    if (!crypto.timingSafeEqual(Buffer.from(received, 'hex'), Buffer.from(expectedHash, 'hex'))) {
+        throw new Error('Firma HMAC inválida.');
+    }
+};
+
+// 3. Middlewares y Rutas
+app.use(express.json({ verify: verifyMetaSignature }));
+app.use(cors());
+app.use(express.static(path.join(__dirname, '../public')));
+app.use('/api/auth', authRoutes);
+app.use('/api/menu', menuRoutes);
+app.use('/api/pedidos', orderRoutes);
+app.use('/api/config', configRouter);
+app.use(webhookRouter);
+
+// 4. Arranque con Carga de Worker
+mongoose.connect(process.env.MONGODB_URI)
+    .then(async () => {
+        logger.info('✅ Conexión a MongoDB exitosa');
+        try {
+            // Importación dinámica: el worker ahora encontrará global.io listo
+            await import('./workers/orderWorker.js');
+            logger.info('🤖 Workers de BullMQ activos');
+        } catch (e) {
+            console.error("💥 ERROR AL CARGAR EL WORKER:", e);
+        }
+        httpServer.listen(PORT, () => logger.info(`🚀 Servidor en puerto ${PORT}`));
+    })
+    .catch(err => {
+        logger.error('💥 Error crítico MongoDB:', err.message);
+        process.exit(1);
+    });
 </file>
 
 <file path="src/whatsapp/utils.js">
@@ -3729,108 +5427,6 @@ export const sendPaymentMethodOptions = async (to, businessId, auth) => {
         await sendMessage(to, "Por ahora solo aceptamos Efectivo. ¿Te parece bien?", auth);
     }
 };
-</file>
-
-<file path="src/server.js">
-// src/server.js
-import 'dotenv/config';
-
-// 🛑 GUARDIA DE ARRANQUE (Mantenemos la excelente idea de Claude)
-const REQUIRED_ENV = ['MONGODB_URI', 'JWT_SECRET', 'WHATSAPP_APP_SECRET', 'WHATSAPP_VERIFY_TOKEN'];
-const missingEnv = REQUIRED_ENV.filter(key => !process.env[key]);
-if (missingEnv.length > 0) {
-    console.error('❌ FATAL: Variables de entorno requeridas no definidas:', missingEnv);
-    process.exit(1);
-}
-
-import express from 'express';
-import { createServer } from 'http';
-import mongoose from 'mongoose';
-import cors from 'cors';
-import crypto from 'crypto';
-import rateLimit from 'express-rate-limit';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import logger from './utils/logger.js';
-import jwt from 'jsonwebtoken';
-import * as socketPkg from 'socket.io';
-
-// Importaciones de rutas
-import authRoutes from './routes/auth.routes.js';
-import menuRoutes from './routes/menu.routes.js';
-import orderRoutes from './routes/order.routes.js';
-import configRouter from './routes/config.routes.js';
-import webhookRouter from './whatsapp/webhook.js';
-
-const SocketServer = socketPkg.Server || socketPkg.default?.Server || socketPkg.default;
-const app = express();
-const httpServer = createServer(app);
-const PORT = process.env.PORT || 3000;
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// 1. Configuración de Socket.io
-const io = new SocketServer(httpServer, {
-    cors: { origin: process.env.ALLOWED_ORIGIN || '*', methods: ['GET', 'POST'] },
-});
-
-// 🌟 SOLUCIÓN AL CÍRCULO VICIOSO:
-global.io = io; 
-
-io.use((socket, next) => {
-    const token = socket.handshake.auth?.token || socket.handshake.query?.token;
-    if (!token) return next(new Error('authentication_error'));
-    try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        socket.businessId = decoded.bid.toString();
-        next();
-    } catch { next(new Error('authentication_error')); }
-});
-
-io.on('connection', (socket) => {
-    socket.join(socket.businessId);
-    logger.info(`[Socket] Dashboard conectado a sala: ${socket.businessId}`);
-});
-
-// 2. Seguridad HMAC para Meta
-const verifyMetaSignature = (req, res, buf) => {
-    if (!req.originalUrl.startsWith('/webhook') || req.method !== 'POST') return;
-    const signature = req.headers['x-hub-signature-256'];
-    if (!signature) throw new Error('Firma HMAC ausente.');
-    const expectedHash = crypto.createHmac('sha256', process.env.WHATSAPP_APP_SECRET).update(buf).digest('hex');
-    const received = signature.split('=')[1];
-    if (!crypto.timingSafeEqual(Buffer.from(received, 'hex'), Buffer.from(expectedHash, 'hex'))) {
-        throw new Error('Firma HMAC inválida.');
-    }
-};
-
-// 3. Middlewares y Rutas
-app.use(express.json({ verify: verifyMetaSignature }));
-app.use(cors());
-app.use(express.static(path.join(__dirname, '../public')));
-app.use('/api/auth', authRoutes);
-app.use('/api/menu', menuRoutes);
-app.use('/api/pedidos', orderRoutes);
-app.use('/api/config', configRouter);
-app.use(webhookRouter);
-
-// 4. Arranque con Carga de Worker
-mongoose.connect(process.env.MONGODB_URI)
-    .then(async () => {
-        logger.info('✅ Conexión a MongoDB exitosa');
-        try {
-            // Importación dinámica: el worker ahora encontrará global.io listo
-            await import('./workers/orderWorker.js');
-            logger.info('🤖 Workers de BullMQ activos');
-        } catch (e) {
-            console.error("💥 ERROR AL CARGAR EL WORKER:", e);
-        }
-        httpServer.listen(PORT, () => logger.info(`🚀 Servidor en puerto ${PORT}`));
-    })
-    .catch(err => {
-        logger.error('💥 Error crítico MongoDB:', err.message);
-        process.exit(1);
-    });
 </file>
 
 <file path="src/whatsapp/webhook.js">
