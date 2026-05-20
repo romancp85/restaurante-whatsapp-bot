@@ -52,18 +52,34 @@ export function detectProductReferences({ text, menuMap = [] }) {
     JSON.stringify(menuMap?.[0], null, 2),
   );
 
-  for (const item of menuMap) {
-    // =====================================================
-    // PRODUCT TOKENS
-    // =====================================================
+  // =====================================================
+  // TOKEN FREQUENCY MAP
+  // =====================================================
 
-    const productTokens = [
+  const tokenFrequency = {};
+
+  for (const item of menuMap) {
+    const tokens = [
       ...tokenize(item.nombre),
 
       ...(Array.isArray(item.aliases)
         ? item.aliases.flatMap((alias) => tokenize(alias))
         : []),
     ];
+
+    const uniqueTokens = [...new Set(tokens)];
+
+    for (const token of uniqueTokens) {
+      tokenFrequency[token] = (tokenFrequency[token] || 0) + 1;
+    }
+  }
+
+  for (const item of menuMap) {
+    // =====================================================
+    // PRODUCT TOKENS
+    // =====================================================
+
+    const productTokens = item.semanticTokens || [];
 
     // evitar duplicados
     const uniqueProductTokens = [...new Set(productTokens)];
@@ -84,15 +100,22 @@ export function detectProductReferences({ text, menuMap = [] }) {
     // SCORE ENGINE
     // =====================================================
 
-    const exactTokenMatches = matchedWords.length;
+    let rarityScore = 0;
+
+    for (const token of matchedWords) {
+      const frequency = tokenFrequency[token] || 1;
+
+      // mientras más raro, más vale
+      rarityScore += 1 / frequency;
+    }
 
     const coverageScore =
-      exactTokenMatches / Math.max(uniqueProductTokens.length, 1);
+      matchedWords.length / Math.max(uniqueProductTokens.length, 1);
 
-    // bonus fuerte por coincidencia directa
-    const strongMatchBonus = exactTokenMatches >= 1 ? 0.45 : 0;
+    // bonus pequeño si encontró tokens específicos
+    const rarityBonus = rarityScore * 0.35;
 
-    const finalScore = Math.min(coverageScore + strongMatchBonus, 1);
+    const finalScore = Math.min(coverageScore + rarityBonus, 1);
 
     // =====================================================
     // BUILD CANDIDATE
@@ -109,7 +132,7 @@ export function detectProductReferences({ text, menuMap = [] }) {
 
       coverageScore,
 
-      strongMatchBonus,
+      rarityScore,
     });
   }
 

@@ -50,6 +50,8 @@ import { inferModifiers } from "../domains/semantic/detectors/inferModifiers.js"
 import { splitSemanticChunks } from "../domains/semantic/parsers/semanticChunker.js";
 
 import { processSemanticMessage } from "../domains/semanticEngine.js";
+import { buildSemanticAliases } from "../domains/semantic/builders/buildSemanticAliases.js";
+
 // ==========================================
 // --- HELPERS DE INTERFAZ ---
 // ==========================================
@@ -224,6 +226,64 @@ const orderWorker = new Worker(
           const actionId =
             messageObject.interactive.button_reply?.id ||
             messageObject.interactive.list_reply?.id;
+
+          // =====================================================
+          // AMBIGUOUS PRODUCT SELECTION
+          // =====================================================
+
+          if (
+            cart.conversationState === "AWAITING_AMBIGUOUS_SELECTION" &&
+            actionId?.startsWith("AMBIGUOUS_")
+          ) {
+            const index = Number(actionId.split("_")[1]);
+
+            const candidates = cart.tempData?.ambiguousCandidates || [];
+
+            const selected = candidates[index];
+
+            if (!selected) {
+              return await sendWhatsAppNotification(
+                userId,
+                "No pude identificar la selección.",
+                auth,
+              );
+            }
+
+            const finalItems = [
+              {
+                action: "add",
+                productName: selected.value,
+                quantity: 1,
+                modifiers: [],
+                notes: "",
+              },
+            ];
+
+            const { cart: updatedCart } = await processCartActions(
+              userId,
+              businessId,
+              finalItems,
+            );
+
+            await updateCart(userId, businessId, {
+              conversationState: "MOSTRANDO_MENU",
+
+              tempData: {
+                ...cart.tempData,
+
+                ambiguousCandidates: null,
+
+                lastProductDiscussed: selected.value,
+              },
+            });
+
+            return await enviarBotonesContinuar(
+              userId,
+              `✅ Agregué *${selected.value}* a tu pedido`,
+              auth,
+              updatedCart,
+            );
+          }
 
           if (actionId === "REPETIR_PEDIDO") {
             const ultimo = await getUltimoPedido(userId, businessId);
@@ -549,7 +609,7 @@ const orderWorker = new Worker(
 
               nombre: item.nombre,
 
-              aliases: item.aliases || [],
+              semanticTokens: buildSemanticAliases(item),
 
               categoria: item.categoria || "",
 
