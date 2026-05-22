@@ -57,7 +57,7 @@ export async function executeSemanticOperations({
       action: "add",
       productName: menuItem.nombre,
       quantity: operation.quantity,
-      modifiers,
+      modifiers: operation.modifiers || [],
       notes,
     });
 

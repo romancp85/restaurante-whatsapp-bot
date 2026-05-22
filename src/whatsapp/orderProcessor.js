@@ -4,6 +4,7 @@ import ShoppingCart from "../models/ShoppingCart.js";
 import Restaurante from "../models/Restaurante.js";
 import MenuItem from "../models/MenuItem.js";
 import { sendMessage, formatPrice } from "./utils.js";
+import { sendWhatsAppNotification } from "../services/notifyService.js";
 import logger from "../utils/logger.js";
 
 export const processFinalOrder = async (

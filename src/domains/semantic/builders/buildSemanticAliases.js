@@ -1,4 +1,5 @@
 import { normalizeText } from "../utils/normalizeText.js";
+import { businessSemanticConfig } from "../config/businessSemanticConfig.js";
 
 // =====================================================
 // HELPERS
@@ -21,106 +22,68 @@ function unique(arr = []) {
 }
 
 // =====================================================
-// SEMANTIC RULES
-// =====================================================
-
-function buildPizzaAliases(nombre) {
-  const aliases = [];
-
-  const normalized = normalizeText(nombre);
-
-  const withoutPizza = normalized.replace(/^pizza\s+/i, "");
-
-  aliases.push("pizza");
-
-  aliases.push(withoutPizza);
-
-  aliases.push(`pizza ${withoutPizza}`);
-
-  aliases.push(`pizza de ${withoutPizza}`);
-
-  // typo común
-  if (withoutPizza.includes("pepperoni")) {
-    aliases.push("peperoni");
-    aliases.push("pizza peperoni");
-  }
-
-  return aliases;
-}
-
-function buildBurgerAliases(nombre) {
-  const aliases = [];
-
-  const normalized = normalizeText(nombre);
-
-  aliases.push("hamburguesa");
-
-  aliases.push("burger");
-
-  aliases.push(normalized);
-
-  return aliases;
-}
-
-function buildDrinkAliases(nombre) {
-  const aliases = [];
-
-  const normalized = normalizeText(nombre);
-
-  aliases.push(normalized);
-
-  if (normalized.includes("coca")) {
-    aliases.push("coca");
-    aliases.push("coca cola");
-    aliases.push("cocacola");
-    aliases.push("cola");
-    aliases.push("refresco");
-    aliases.push("coke");
-  }
-
-  if (normalized.includes("fanta")) {
-    aliases.push("fanta");
-    aliases.push("refresco");
-  }
-
-  return aliases;
-}
-
-// =====================================================
 // MAIN
 // =====================================================
 
 export function buildSemanticAliases(item) {
   const nombre = item?.nombre || "";
 
-  const categoria = normalizeText(item?.categoria || "");
+  const normalizedName = normalizeText(nombre);
+
+  const typoMap = businessSemanticConfig?.typoMap || [];
+
+  const synonymMap = businessSemanticConfig?.synonymMap || [];
+
+  const genericTokens = businessSemanticConfig?.genericTokens || [];
 
   let aliases = [];
 
   // =====================================================
-  // BASE
+  // BASE FULL NAME
   // =====================================================
 
-  aliases.push(normalizeText(nombre));
-
-  tokenize(nombre).forEach((token) => {
-    aliases.push(normalizeText(token));
-  });
+  aliases.push(normalizedName);
 
   // =====================================================
-  // CATEGORY RULES
+  // TOKENS
   // =====================================================
 
-  if (categoria.includes("pizza")) {
-    aliases.push(...buildPizzaAliases(nombre));
+  const tokens = tokenize(nombre);
+
+  for (const token of tokens) {
+    const normalizedToken = normalizeText(token);
+
+    aliases.push(normalizedToken);
+
+    // =====================================================
+    // TYPO RULES
+    // =====================================================
+
+    for (const typoRule of typoMap) {
+      if (typoRule.canonical === normalizedToken) {
+        aliases.push(...(typoRule.aliases || []));
+      }
+    }
+
+    // =====================================================
+    // SYNONYMS
+    // =====================================================
+
+    for (const synonymRule of synonymMap) {
+      if (synonymRule.canonical === normalizedToken) {
+        aliases.push(...(synonymRule.aliases || []));
+      }
+    }
   }
 
-  if (categoria.includes("hamburguesa") || categoria.includes("burger")) {
-    aliases.push(...buildBurgerAliases(nombre));
-  }
+  // =====================================================
+  // GENERIC TOKENS
+  // =====================================================
 
-  if (categoria.includes("bebida") || categoria.includes("refresco")) {
-    aliases.push(...buildDrinkAliases(nombre));
+  for (const genericToken of genericTokens) {
+    if (normalizedName.includes(genericToken)) {
+      aliases.push(genericToken);
+    }
   }
 
   // =====================================================

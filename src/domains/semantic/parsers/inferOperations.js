@@ -2,6 +2,8 @@
  * Detecta operaciones conversacionales estructuradas.
  */
 
+import { normalizeText } from "../utils/normalizeText.js";
+
 const NUMBER_WORDS = {
   un: 1,
   una: 1,
@@ -23,12 +25,10 @@ const NUMBER_WORDS = {
 // =====================================================
 
 function normalizeSemanticText(text = "") {
-  return text
-    .toLowerCase()
-    .replace(
-      /\b(un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/gi,
-      (match) => NUMBER_WORDS[match.toLowerCase()] || match,
-    );
+  return normalizeText(text).replace(
+    /\b(un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/gi,
+    (match) => NUMBER_WORDS[match.toLowerCase()] || match,
+  );
 }
 
 function extractQuantityNearToken({ semanticText, tokens = [] }) {
@@ -59,14 +59,58 @@ function extractQuantityNearToken({ semanticText, tokens = [] }) {
   return 1;
 }
 
+function detectModifiersForProduct({ semanticText, menuItem }) {
+  const matchedModifiers = [];
+
+  const processed = new Set();
+
+  const modifierTokens = menuItem?.modifierTokens || [];
+
+  console.log(
+    "[inferOperations] modifierTokens:",
+    JSON.stringify(modifierTokens, null, 2),
+  );
+
+  for (const modifier of modifierTokens) {
+    const matched = modifier.tokens.some((token) => {
+      const normalizedToken = normalizeText(token);
+
+      const hasMatch = semanticText.includes(normalizedToken);
+
+      console.log("[ModifierMatch]", normalizedToken, "=>", hasMatch);
+
+      return hasMatch;
+    });
+
+    if (!matched) {
+      continue;
+    }
+
+    if (processed.has(modifier.original)) {
+      continue;
+    }
+
+    processed.add(modifier.original);
+
+    matchedModifiers.push({
+      type: "ADD_MODIFIER",
+      value: modifier.original,
+    });
+  }
+
+  return matchedModifiers;
+}
+
 // =====================================================
 // MAIN
 // =====================================================
 
-function inferOperations(text = "", references = [], modifiers = []) {
+function inferOperations(text = "", references = [], menuMap = []) {
   const operations = [];
 
   const semanticText = normalizeSemanticText(text);
+
+  console.log("[inferOperations] semanticText:", semanticText);
 
   let match;
 
@@ -91,8 +135,6 @@ function inferOperations(text = "", references = [], modifiers = []) {
         value: Number(match[2]),
       },
 
-      modifiers,
-
       raw: match[0],
     });
   }
@@ -113,8 +155,6 @@ function inferOperations(text = "", references = [], modifiers = []) {
         type: "menu_index",
         value: Number(match[2]),
       },
-
-      modifiers,
 
       raw: match[0],
     });
@@ -147,7 +187,9 @@ function inferOperations(text = "", references = [], modifiers = []) {
     // TOKENS
     // =====================================================
 
-    const normalizedProduct = productRef.value.toLowerCase().replace(/-/g, " ");
+    const normalizedProduct = normalizeText(
+      productRef.value.replace(/-/g, " "),
+    );
 
     const semanticTokens = normalizedProduct
       .split(" ")
@@ -163,6 +205,43 @@ function inferOperations(text = "", references = [], modifiers = []) {
     });
 
     // =====================================================
+    // MENU ITEM
+    // =====================================================
+
+    const normalizedRef = normalizeText(productRef.value).trim();
+
+    console.log("[inferOperations] normalizedRef:", normalizedRef);
+
+    for (const item of menuMap) {
+      console.log({
+        original: item.nombre,
+        normalized: normalizeText(item.nombre).trim(),
+      });
+    }
+
+    console.log(
+      "[inferOperations] menuMap FULL:",
+      JSON.stringify(menuMap, null, 2),
+    );
+
+    const menuItem = menuMap.find(
+      (item) => normalizeText(item.nombre).trim() === normalizedRef,
+    );
+    // =====================================================
+    // MODIFIERS
+    // =====================================================
+
+    const detectedModifiers = detectModifiersForProduct({
+      semanticText,
+      menuItem,
+    });
+
+    console.log(
+      "[inferOperations] detectedModifiers:",
+      JSON.stringify(detectedModifiers, null, 2),
+    );
+
+    // =====================================================
     // OPERATION
     // =====================================================
 
@@ -176,7 +255,7 @@ function inferOperations(text = "", references = [], modifiers = []) {
         value: productRef.value,
       },
 
-      modifiers,
+      modifiers: detectedModifiers,
 
       raw: productRef.value,
     });

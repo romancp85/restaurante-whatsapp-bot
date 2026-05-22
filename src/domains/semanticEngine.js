@@ -1,7 +1,7 @@
 import { extractReferences } from "./semantic/detectors/extractReferences.js";
 import { detectProductReferences } from "./semantic/detectors/detectProductReferences.js";
 import { inferOperations } from "./semantic/parsers/inferOperations.js";
-import { inferModifiers } from "./semantic/detectors/inferModifiers.js";
+//import { inferModifiers } from "./semantic/detectors/inferModifiers.js";
 import { resolveContextReference } from "./semantic/detectors/resolveContextReference.js";
 import { executeSemanticOperations } from "./semantic/engine/executeSemanticOperations.js";
 
@@ -154,18 +154,6 @@ export async function processSemanticMessage({
     references.push(...chunkReferences);
 
     // =====================================================
-    // MODIFIERS
-    // =====================================================
-
-    let chunkModifiers = [];
-
-    try {
-      chunkModifiers = safeArray(inferModifiers(chunk));
-    } catch (err) {
-      console.error("[SemanticEngine] modifiers:", err.message);
-    }
-
-    // =====================================================
     // OPERATIONS
     // =====================================================
 
@@ -173,7 +161,7 @@ export async function processSemanticMessage({
 
     try {
       chunkOperations = safeArray(
-        inferOperations(chunk, chunkReferences, chunkModifiers),
+        inferOperations(chunk, chunkReferences, menuMap),
       );
     } catch (err) {
       console.error("[SemanticEngine] inferOperations:", err.message);
