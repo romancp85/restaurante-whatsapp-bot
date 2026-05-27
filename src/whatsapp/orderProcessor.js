@@ -5,6 +5,7 @@ import Restaurante from "../models/Restaurante.js";
 import MenuItem from "../models/MenuItem.js";
 import { sendMessage, formatPrice } from "./utils.js";
 import { sendWhatsAppNotification } from "../services/notifyService.js";
+import CONVERSATION_STATES from "../constants/conversationStates.js";
 import logger from "../utils/logger.js";
 
 export const processFinalOrder = async (
@@ -68,7 +69,7 @@ export const processFinalOrder = async (
       if (bulkOps.length > 0) await MenuItem.bulkWrite(bulkOps);
     } catch (stockError) {
       logger.error(
-        `[Stock Error] Pedido #${nuevoPedido.numero_pedido}: ${stockError.message}`,
+        `[orderProcessor] Pedido #${nuevoPedido.numero_pedido}: ${stockError.message}`,
       );
     }
 
@@ -81,8 +82,8 @@ export const processFinalOrder = async (
           items: [], // 🗑️ Vaciamos la bolsa física
           totalCents: 0, // 💰 Reseteamos el dinero
           conversationState: esTransferencia
-            ? "ESPERANDO_COMPROBANTE"
-            : "POST_VENTA",
+            ? CONVERSATION_STATES.ESPERANDO_COMPROBANTE
+            : CONVERSATION_STATES.POST_VENTA,
           tempData: {
             ...tempData,
             history: tempData.history.slice(-4), // Mantenemos solo un poco de memoria
@@ -94,7 +95,9 @@ export const processFinalOrder = async (
         },
       },
     );
-    logger.info(`[SaaS] Sesión evolucionada a POST_VENTA para ${userId}`);
+    logger.info(
+      `[orderProcessor] Sesión evolucionada a POST_VENTA para ${userId}`,
+    );
     //logger.info(`[SaaS] Sesión evolucionada a ${esTransferencia ? 'ESPERANDO_COMPROBANTE' : 'POST_VENTA'} para ${userId}`);
 
     // 5. CONSTRUCCIÓN DEL MENSAJE (Luxury Experience)
@@ -120,7 +123,7 @@ export const processFinalOrder = async (
     await sendMessage(userId, confirmText, auth);
     return nuevoPedido;
   } catch (error) {
-    logger.error(`Error FATAL en processFinalOrder:`, error);
+    logger.error(`[orderProcessor] Error FATAL en processFinalOrder:`, error);
     await sendMessage(
       userId,
       "⚠️ Hubo un error al registrar tu pedido. Por favor, contacta al restaurante.",

@@ -3,6 +3,8 @@ import ShoppingCart from "../models/ShoppingCart.js";
 import MenuItem from "../models/MenuItem.js";
 import logger from "../utils/logger.js";
 
+logger.info("[CartUtils] Cargador de utilidades de carrito iniciado.");
+
 /**
  * 1. Obtener o crear el carrito (Multi-tenant)
  */
@@ -114,7 +116,7 @@ export const addItemToCart = async (whatsappId, businessId, itemDetails) => {
   if (itemIndex > -1) {
     cart.items[itemIndex].cantidad += quantity;
   } else {
-    console.log("[CartUtils] Guardando notas:", notas);
+    logger.debug("[CartUtils] Guardando notas:", { notas });
 
     cart.items.push({
       itemId,

@@ -4,13 +4,15 @@ import { sendWhatsAppNotification, notifyDashboard } from "../notifyService.js";
 
 import { updateCart } from "../../whatsapp/cartUtils.js";
 
+import CONVERSATION_STATES from "../../constants/conversationStates.js";
+
 export const handleImageMessage = async ({
   userId,
   businessId,
   auth,
   cart,
 }) => {
-  if (cart.conversationState === "ESPERANDO_COMPROBANTE") {
+  if (cart.conversationState === CONVERSATION_STATES.ESPERANDO_COMPROBANTE) {
     const pedido = await Pedido.findOne({
       telefonoCliente: userId,
       estado: "Pendiente de Pago",
@@ -25,7 +27,7 @@ export const handleImageMessage = async ({
       notifyDashboard(businessId, pedido);
 
       await updateCart(userId, businessId, {
-        conversationState: "POST_VENTA",
+        conversationState: CONVERSATION_STATES.POST_VENTA,
       });
 
       return await sendWhatsAppNotification(

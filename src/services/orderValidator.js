@@ -1,6 +1,29 @@
 // src/services/orderValidator.js
 import MenuItem from "../models/MenuItem.js";
 import logger from "../utils/logger.js";
+import { matchModifierOption } from "../utils/matchModifierOption.js";
+import { normalizeModifierValue } from "../utils/normalizeModifierValue.js";
+
+// =====================================================
+// FINGERPRINT BUILDER
+// =====================================================
+
+function buildItemFingerprint(item) {
+  return JSON.stringify({
+    itemId: item.itemId.toString(),
+
+    notas: item.notas || "",
+
+    modifiers: [...(item.opcionesSeleccionadas || [])]
+      .map((m) => ({
+        grupo: m.grupoNombre,
+        opcion: m.opcionNombre,
+      }))
+      .sort((a, b) =>
+        `${a.grupo}:${a.opcion}`.localeCompare(`${b.grupo}:${b.opcion}`),
+      ),
+  });
+}
 
 /**
  * Valida los ítems extraídos por la IA contra el catálogo real de la DB.
@@ -88,19 +111,20 @@ export const validarPedido = async (aiItems, businessId) => {
           for (const grupo of productoReal.modificadores) {
             const seleccionadosDelUsuario = modifiersSolicitados.filter(
               (modifier) => {
-                const modifierValue = modifier.value?.toLowerCase?.() || "";
+                const modifierValue = normalizeModifierValue(modifier.value);
 
-                return grupo.opciones.some((opt) =>
-                  opt.nombre.toLowerCase().includes(modifierValue),
-                );
+                return !!matchModifierOption(modifierValue, grupo.opciones);
               },
             );
 
             seleccionadosDelUsuario.forEach((modifier, index) => {
-              const modifierValue = modifier.value?.toLowerCase?.() || "";
+              const modifierValue = normalizeModifierValue(
+                modifier.value || "",
+              );
 
-              const opcionDB = grupo.opciones.find((o) =>
-                o.nombre.toLowerCase().includes(modifierValue),
+              const opcionDB = matchModifierOption(
+                modifierValue,
+                grupo.opciones,
               );
 
               if (!opcionDB) {
@@ -149,11 +173,23 @@ export const validarPedido = async (aiItems, businessId) => {
         // =====================================================
         // CONVERTIR A NOTAS HUMANAS
         // =====================================================
-        console.log("[Validator] Modifiers recibidos:", modifiersSolicitados);
+        logger.debug("[Validator] Modifiers recibidos:", modifiersSolicitados);
+
         modifiersSolicitados.forEach((modifier) => {
-          const value = modifier.value?.trim();
+          const rawValue = modifier.value?.trim();
+
+          const value = normalizeModifierValue(rawValue);
 
           if (!value) {
+            return;
+          }
+
+          // =====================================================
+          // SI YA ES UN MODIFIER ESTRUCTURADO
+          // NO DUPLICARLO COMO NOTA
+          // =====================================================
+
+          if (modifiersEncontrados.has(modifier.value)) {
             return;
           }
 
@@ -174,22 +210,66 @@ export const validarPedido = async (aiItems, businessId) => {
       const precioUnitarioFinal =
         productoReal.precioBase + precioExtraAcumulado;
       const cantidad = parseInt(aiItem.quantity) || 1;
-      const notasExistentes = aiItem.notes || "";
+      let notasExistentes = aiItem.notes || "";
+
+      // =====================================================
+      // ELIMINAR MODIFIERS DUPLICADOS EN NOTES
+      // =====================================================
+
+      if (Array.isArray(aiItem.modifiers)) {
+        for (const modifier of aiItem.modifiers) {
+          const normalizedModifier = normalizeModifierValue(modifier.value);
+
+          if (!normalizedModifier) {
+            continue;
+          }
+
+          // Eliminamos:
+          // "extra queso"
+          // "queso extra"
+          // "con queso"
+          // etc
+
+          const patterns = [
+            `extra\\s+${normalizedModifier}`,
+            `${normalizedModifier}\\s+extra`,
+            `con\\s+${normalizedModifier}`,
+            `sin\\s+${normalizedModifier}`,
+            normalizedModifier,
+          ];
+
+          for (const pattern of patterns) {
+            const regex = new RegExp(pattern, "gi");
+
+            notasExistentes = notasExistentes.replace(regex, "");
+          }
+        }
+
+        notasExistentes = notasExistentes
+          .replace(/\s{2,}/g, " ")
+          .replace(/\|\s*\|/g, "|")
+          .replace(/^[,|\s]+|[,|\s]+$/g, "")
+          .trim();
+      }
 
       const notasIA = notasSemanticas.join(", ");
 
       const notasItem = [notasExistentes, notasIA].filter(Boolean).join(" | ");
 
-      console.log("[Validator] Notas finales:", notasItem);
+      logger.debug("[Validator] Notas finales:", { notasItem });
 
       // Agrupamiento en el carrito (Mismo ID + Mismos Extras + Mismas Notas)
-      const itemExistenteIdx = itemsValidados.findIndex(
-        (v) =>
-          v.itemId.toString() === productoReal._id.toString() &&
-          JSON.stringify(v.opcionesSeleccionadas) ===
-            JSON.stringify(opcionesSeleccionadas) &&
-          v.notas === notasItem,
-      );
+      const newFingerprint = buildItemFingerprint({
+        itemId: productoReal._id,
+        opcionesSeleccionadas,
+        notas: notasItem,
+      });
+
+      const itemExistenteIdx = itemsValidados.findIndex((v) => {
+        const existingFingerprint = buildItemFingerprint(v);
+
+        return existingFingerprint === newFingerprint;
+      });
 
       if (itemExistenteIdx > -1) {
         itemsValidados[itemExistenteIdx].quantity += cantidad;

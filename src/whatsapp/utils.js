@@ -46,7 +46,7 @@ export const sendMessage = async (arg1, arg2, arg3) => {
 
   if (!token || !phoneId || !to) {
     logger.error(
-      `[SaaS Error] Datos insuficientes para envío. To: ${to}, Token: ${token ? "OK" : "FALTA"}, PhoneId: ${phoneId ? "OK" : "FALTA"}`,
+      `[Utils SaaS Error] Datos insuficientes para envío. To: ${to}, Token: ${token ? "OK" : "FALTA"}, PhoneId: ${phoneId ? "OK" : "FALTA"}`,
     );
     return;
   }
@@ -75,7 +75,7 @@ export const sendMessage = async (arg1, arg2, arg3) => {
     });
   } catch (error) {
     const detail = error.response?.data?.error || error.message;
-    logger.error("[Meta API Error] " + JSON.stringify(detail));
+    logger.error("[Utils Meta API Error] " + JSON.stringify(detail));
   }
 };
 
@@ -195,7 +195,7 @@ export const sendMenu = async (to, businessId, auth, cart = null) => {
       conversationState: "MOSTRANDO_MENU",
     });
   } catch (error) {
-    logger.error("Error en sendMenu:", error);
+    logger.error("[utils] Error en sendMenu:", error);
   }
 };
 
@@ -362,7 +362,10 @@ export const sendPaymentMethodOptions = async (to, businessId, auth) => {
       restaurante.configuracion?.acceptedPaymentMethods || ["Efectivo"];
 
     // Debug para consola (Te dirá exactamente qué encontró)
-    console.log(`[SaaS Debug] Métodos para ${restaurante.nombre}:`, methods);
+    logger.debug(
+      `[Utils SaaS Debug] Métodos para ${restaurante.nombre}:`,
+      methods,
+    );
 
     // 3. Crear botones (Máximo 3 por Meta API)
     const buttons = methods.slice(0, 3).map((method) => {
@@ -390,7 +393,7 @@ export const sendPaymentMethodOptions = async (to, businessId, auth) => {
 
     await sendMessage(to, interactivePayload, auth);
   } catch (error) {
-    logger.error(`Error en sendPaymentMethodOptions SaaS:`, error);
+    logger.error(`[Utils] Error en sendPaymentMethodOptions SaaS:`, error);
     // Fallback de emergencia
     await sendMessage(
       to,

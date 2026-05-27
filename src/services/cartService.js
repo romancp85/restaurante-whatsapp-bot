@@ -6,6 +6,7 @@ import {
   removeItemsByName,
 } from "../whatsapp/cartUtils.js";
 import { validarPedido } from "./orderValidator.js";
+import { logger } from "../utils/logger.js";
 
 /**
  * Procesa una lista de intenciones (ADD/REMOVE) y actualiza el carrito real.
@@ -21,15 +22,13 @@ export const processCartActions = async (userId, businessId, items) => {
 
   for (const item of items) {
     if (item.action === "REMOVE") {
-      console.log(`[cartService] 🗑️ Removiendo: ${item.productName}`);
+      logger.debug(`[cartService] 🗑️ Removiendo: ${item.productName}`);
       await removeItemsByName(userId, businessId, item.productName);
     } else {
-      console.log(`[cartService] ➕ Intentando añadir: ${item.productName}`);
+      logger.debug(`[cartService] ➕ Intentando añadir: ${item.productName}`);
       // Validamos existencia en el catálogo y precios
-      console.log(
-        "[cartService] Item completo:",
-        JSON.stringify(item, null, 2),
-      );
+      logger.debug("[cartService] Item completo: ", { item });
+      //Aqui cambie el log para mostrar el item completo, antes solo mostraba el nombre del producto, con esto podemos ver toda la info del item que llega a esta parte del código, así podemos debuggear mejor los problemas de validación que puedan surgir.
       const { itemsValidados } = await validarPedido([item], businessId);
 
       if (itemsValidados && itemsValidados.length > 0) {

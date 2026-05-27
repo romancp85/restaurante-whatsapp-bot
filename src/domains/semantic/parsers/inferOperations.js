@@ -3,6 +3,7 @@
  */
 
 import { normalizeText } from "../utils/normalizeText.js";
+import logger from "../../../utils/logger.js";
 
 const NUMBER_WORDS = {
   un: 1,
@@ -66,9 +67,8 @@ function detectModifiersForProduct({ semanticText, menuItem }) {
 
   const modifierTokens = menuItem?.modifierTokens || [];
 
-  console.log(
-    "[inferOperations] modifierTokens:",
-    JSON.stringify(modifierTokens, null, 2),
+  logger.debug(
+    `[inferOperations] modifierTokens encontrados=${modifierTokens.length}`,
   );
 
   for (const modifier of modifierTokens) {
@@ -77,7 +77,9 @@ function detectModifiersForProduct({ semanticText, menuItem }) {
 
       const hasMatch = semanticText.includes(normalizedToken);
 
-      console.log("[ModifierMatch]", normalizedToken, "=>", hasMatch);
+      logger.debug(
+        `[ModifierMatch] token="${normalizedToken}" matched=${hasMatch}`,
+      );
 
       return hasMatch;
     });
@@ -110,7 +112,7 @@ function inferOperations(text = "", references = [], menuMap = []) {
 
   const semanticText = normalizeSemanticText(text);
 
-  console.log("[inferOperations] semanticText:", semanticText);
+  logger.debug("[inferOperations] semanticText:", semanticText);
 
   let match;
 
@@ -168,7 +170,7 @@ function inferOperations(text = "", references = [], menuMap = []) {
     (ref) => ref.type === "product_name",
   );
 
-  console.log("[inferOperations] productReferences:", productReferences);
+  logger.debug("[inferOperations] productReferences:", productReferences);
 
   const processedProducts = new Set();
 
@@ -210,23 +212,24 @@ function inferOperations(text = "", references = [], menuMap = []) {
 
     const normalizedRef = normalizeText(productRef.value).trim();
 
-    console.log("[inferOperations] normalizedRef:", normalizedRef);
+    logger.debug(`[inferOperations] buscando menuItem="${normalizedRef}"`);
 
     for (const item of menuMap) {
-      console.log({
+      logger.debug("[inferOperations] menuMap item:", {
         original: item.nombre,
         normalized: normalizeText(item.nombre).trim(),
       });
     }
 
-    console.log(
+    /**logger.debug(
       "[inferOperations] menuMap FULL:",
       JSON.stringify(menuMap, null, 2),
-    );
+    );**/
 
     const menuItem = menuMap.find(
       (item) => normalizeText(item.nombre).trim() === normalizedRef,
     );
+
     // =====================================================
     // MODIFIERS
     // =====================================================
@@ -236,9 +239,8 @@ function inferOperations(text = "", references = [], menuMap = []) {
       menuItem,
     });
 
-    console.log(
-      "[inferOperations] detectedModifiers:",
-      JSON.stringify(detectedModifiers, null, 2),
+    logger.debug(
+      `[inferOperations] modifiers detectados=${detectedModifiers.length}`,
     );
 
     // =====================================================
@@ -277,9 +279,8 @@ function inferOperations(text = "", references = [], menuMap = []) {
     return true;
   });
 
-  console.log(
-    "[inferOperations] operations:",
-    JSON.stringify(validOperations, null, 2),
+  logger.debug(
+    `[inferOperations] operaciones finales=${validOperations.length}`,
   );
 
   return validOperations;

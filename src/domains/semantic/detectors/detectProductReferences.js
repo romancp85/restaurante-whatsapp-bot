@@ -1,4 +1,5 @@
 import { normalizeText } from "../utils/normalizeText.js";
+import logger from "../../../utils/logger.js";
 
 const STOP_WORDS = [
   "hola",
@@ -47,7 +48,7 @@ export function detectProductReferences({ text, menuMap = [] }) {
 
   const detected = [];
 
-  console.log(
+  logger.debug(
     "[detectProductReferences] menuMap sample:",
     JSON.stringify(menuMap?.[0], null, 2),
   );
@@ -142,7 +143,7 @@ export function detectProductReferences({ text, menuMap = [] }) {
 
   detected.sort((a, b) => b.score - a.score);
 
-  console.log(
+  logger.debug(
     "[detectProductReferences] detected:",
     JSON.stringify(detected, null, 2),
   );

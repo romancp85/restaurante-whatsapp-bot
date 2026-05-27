@@ -1,10 +1,34 @@
 // src/services/aiService.js
 import { analizarPedidoConIA } from "../utils/aiUtils.js";
+import { logger } from "../utils/logger.js";
 
 /**
  * Servicio de Inteligencia: Traduce texto humano a intenciones de negocio.
  * Incluye traducción de índices y gestión de contexto post-venta.
  */
+
+const COMPLEX_PATTERNS = [
+  /una con/i,
+  /una sin/i,
+  /otra con/i,
+  /otra sin/i,
+  /adem[aá]s/i,
+  /extra/i,
+  /sin\s+\w+/i,
+  /mitad/i,
+  /agrega/i,
+  /quitale/i,
+  /qu[ií]tale/i,
+  /pero/i,
+  /combo/i,
+  /separad[oa]/i,
+  /distint[oa]s/i,
+];
+
+const isComplexMessage = (text = "") => {
+  return COMPLEX_PATTERNS.some((pattern) => pattern.test(text));
+};
+
 export const getIntention = async (text, context, semanticData = {}) => {
   const {
     history,
@@ -20,28 +44,67 @@ export const getIntention = async (text, context, semanticData = {}) => {
   // Si el nuevo motor semántico ya entendió el mensaje,
   // evitamos usar el traductor legacy destructivo.
 
-  const skipLegacyTranslator = semanticData?.operations?.length > 0;
+  const isComplex = isComplexMessage(text);
+
+  const skipLegacyTranslator =
+    semanticData?.operations?.length > 0 && !isComplex;
 
   // 1. TRADUCTOR DE ÍNDICES (Lógica técnica agnóstica)
+
   let processedText = text;
+
+  /**
+   * IMPORTANTE:
+   * El traductor legacy SOLO debe activarse
+   * cuando el usuario claramente hace referencia
+   * a un índice visual del menú.
+   *
+   * Ejemplos válidos:
+   * - "quiero el 2"
+   * - "#3"
+   * - "producto 4"
+   * - "opción 5"
+   *
+   * Ejemplos que NO deben traducirse:
+   * - "2 hamburguesas"
+   * - "3 cocas"
+   * - "4 tacos"
+   *
+   * Esto evita confundir cantidades
+   * con índices del catálogo.
+   */
+
   if (menuMap?.length > 0 && !skipLegacyTranslator) {
     const sortedMap = [...menuMap].sort((a, b) => b.index - a.index);
+
     sortedMap.forEach((item) => {
+      /**
+       * NOTA:
+       * El prefijo NO es opcional.
+       *
+       * Si el usuario no menciona explícitamente:
+       * - menu
+       * - menú
+       * - numero
+       * - #
+       * - opcion
+       * - producto
+       *
+       * entonces NO se interpreta como índice.
+       */
+
       const regex = new RegExp(
-        `\\b(la|el|del|n\\.?|#|numero|posicion)?\\s*${item.index}\\b`,
+        `\\b(?:menu|menú|numero|n\\.?|#|opcion|opción|producto)\\s*${item.index}\\b`,
         "gi",
       );
-      const esSoloNumero = text.trim() === item.index.toString();
 
-      if (regex.test(processedText) || esSoloNumero) {
-        processedText = esSoloNumero
-          ? item.nombre
-          : processedText.replace(regex, ` ${item.nombre} `);
+      if (regex.test(processedText)) {
+        processedText = processedText.replace(regex, ` ${item.nombre} `);
       }
     });
   }
 
-  console.log(
+  logger.info(
     `[aiService] Texto Original: "${text}" | Traducido: "${processedText}"`,
   );
 
@@ -49,8 +112,8 @@ export const getIntention = async (text, context, semanticData = {}) => {
   // BYPASS IA SI EL SEMANTIC ENGINE YA ENTENDIÓ
   // =====================================================
 
-  if (semanticData?.operations?.length > 0) {
-    console.log("[aiService] Semantic Engine tomó prioridad. IA omitida.");
+  if (semanticData?.operations?.length > 0 && !isComplex) {
+    logger.info("[aiService] Semantic Engine tomó prioridad. IA omitida.");
 
     return {
       items: [],

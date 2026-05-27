@@ -1,6 +1,7 @@
 // src/models/ShoppingCart.js - VERSIÓN FINAL ENTERPRISE
 
 import mongoose from "mongoose";
+import CONVERSATION_STATES from "../constants/conversationStates.js";
 
 // 1. Esquema de los ítems internos
 const itemSchema = new mongoose.Schema({
@@ -39,22 +40,8 @@ const shoppingCartSchema = new mongoose.Schema(
     },
     conversationState: {
       type: String,
-      enum: [
-        "INICIO",
-        "MOSTRANDO_MENU",
-        "PREGUNTANDO_NOMBRE",
-        "PREGUNTANDO_DIRECCION",
-        "PREGUNTANDO_PAGO",
-        "CONFIRMANDO_PEDIDO",
-        "ESPERANDO_AGENTE",
-        "PREGUNTANDO_MODO_ENTREGA",
-        "WAITING_FOR_REMOVAL",
-        "PROPUESTA_VIP",
-        "POST_VENTA",
-        "ESPERANDO_COMPROBANTE",
-        "AWAITING_AMBIGUOUS_SELECTION",
-      ],
-      default: "INICIO",
+      enum: Object.values(CONVERSATION_STATES),
+      default: CONVERSATION_STATES.INICIO,
     },
     tempData: {
       // Almacena history (IA), menuMap, lastProductDiscussed, deliveryMode, etc.

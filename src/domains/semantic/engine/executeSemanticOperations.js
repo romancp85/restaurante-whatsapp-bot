@@ -3,6 +3,8 @@
  * en acciones compatibles con processCartActions.
  */
 
+import logger from "../../../utils/logger.js";
+
 export async function executeSemanticOperations({
   operations = [],
   modifiers = [],
@@ -10,8 +12,8 @@ export async function executeSemanticOperations({
 }) {
   const items = [];
 
-  console.log(
-    "[SemanticExecutor] Modifiers recibidos:",
+  logger.debug(
+    "[SemanticOperations] Modifiers recibidos:",
     JSON.stringify(modifiers, null, 2),
   );
 
@@ -48,12 +50,12 @@ export async function executeSemanticOperations({
 
     const notes = (operation.modifiers || []).map((m) => m.raw).join(", ");
 
-    console.log(
-      "[SemanticExecutor] Modifiers asignados:",
+    logger.debug(
+      "[SemanticOperations] Modifiers asignados:",
       operation.modifiers || [],
     );
 
-    console.log("[SemanticExecutor] Item construido:", {
+    logger.debug("[SemanticOperations] Item construido:", {
       action: "add",
       productName: menuItem.nombre,
       quantity: operation.quantity,

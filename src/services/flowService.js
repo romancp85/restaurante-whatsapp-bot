@@ -3,6 +3,9 @@ import { getUltimoPedido, generarPropuestaVIP } from "./loyaltyService.js";
 import { sendMenu } from "../whatsapp/utils.js";
 import { sendWhatsAppNotification } from "./notifyService.js";
 import { updateCart } from "../whatsapp/cartUtils.js";
+import logger from "../utils/logger.js";
+
+logger.info("[Flow]--- ✅ MÓDULO flowService.js CARGADO ---");
 
 const SALUDOS = [
   "HOLA",
@@ -130,7 +133,7 @@ export const handleInitialFlow = async (
   const estadosDeBienvenida = ["INICIO", "POST_VENTA"];
   const esEstadoInicialValido = estadosDeBienvenida.includes(currentState);
 
-  console.log("[flowService]", {
+  logger.debug("[flowService]", {
     esSaludo,
     esMensajeCorto,
     currentState,
@@ -142,7 +145,7 @@ export const handleInitialFlow = async (
     esEstadoInicialValido &&
     (esMensajeCorto || esSaludo)
   ) {
-    console.log(
+    logger.info(
       `[flowService] 👋 Manejando inicio legal (Estado: ${currentState}).`,
     );
 

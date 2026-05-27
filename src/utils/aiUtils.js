@@ -55,19 +55,34 @@ export const analizarPedidoConIA = async (
     // 🌟 REFUERZO TOP-TIER: Si el filtro es muy restrictivo (< 5 productos),
     // cargamos productos adicionales para dar contexto a la IA.
     if (menuItems.length < 5) {
-      const extraItems = await MenuItem.find({ businessId: bId, activo: true })
-        .limit(12)
-        .lean();
+      const categoriasDetectadas = [
+        ...new Set(menuItems.map((i) => i.categoria).filter(Boolean)),
+      ];
+
+      const extraQuery = {
+        businessId: bId,
+        activo: true,
+      };
+
+      // Si ya detectamos categorías,
+      // solo reforzamos dentro de esas categorías.
+      if (categoriasDetectadas.length > 0) {
+        extraQuery.categoria = { $in: categoriasDetectadas };
+      }
+
+      const extraItems = await MenuItem.find(extraQuery).limit(8).lean();
+
       const mapaItems = new Map();
-      // Unimos resultados evitando duplicados por ID
+
       [...menuItems, ...extraItems].forEach((item) =>
         mapaItems.set(item._id.toString(), item),
       );
+
       menuItems = Array.from(mapaItems.values());
     }
 
     logger.info(
-      `[SaaS] Contexto IA cargado: ${menuItems.length} productos disponibles.`,
+      `[SaaS AI Utils] Contexto IA cargado: ${menuItems.length} productos disponibles.`,
     );
 
     // --- 2. CONSTRUCCIÓN DEL CATÁLOGO PARA LA IA (Anclaje Semántico) ---
@@ -90,61 +105,218 @@ export const analizarPedidoConIA = async (
       .join("\n");
 
     // --- 3. CONSTRUCCIÓN DEL SYSTEM PROMPT ---
-    const systemPrompt = `Eres Mateo, el asistente virtual del negocio.
-        Tu personalidad es amable, concisa y profesional.
+    const systemPrompt = `
+Eres Mateo, el asistente virtual del negocio.
+Tu personalidad es amable, profesional y concisa.
 
-        OBJETIVO: Convertir el mensaje del cliente en un JSON basado ÚNICAMENTE en el catálogo.
+Tu trabajo es convertir mensajes del cliente en un JSON estructurado
+utilizando ÚNICAMENTE información válida del catálogo disponible.
 
-        🌟 DIRECTIVAS ESPECÍFICAS Y CONTEXTO:
-        ${restauranteConfig}
+━━━━━━━━━━━━━━━━━━
+CONTEXTO ACTUAL
+━━━━━━━━━━━━━━━━━━
 
-        REGLAS TÉCNICAS (INMUTABLES):
-            1. CONTEXTO: Hablamos de: "${lastProductDiscussed || "nada aún"}". Úsalo para referencias como "ese" o "sí".
-            2. ATRIBUCIÓN: Cualquier detalle o extra DEBE guardarse dentro del objeto de ese producto.
-            3. NOTAS GLOBALES: Usa 'notasCocina' o 'notasPago' solo para instrucciones que afecten a TODO el pedido (ej: "traer cambio", "tocar timbre").
-4. RESPUESTA HUMANA (waiterMessage):
-- Si el usuario agrega un producto con modificaciones culinarias,
-  responde como:
-  "He anotado tu hamburguesa sin cebolla."
-- No menciones REMOVE salvo que el usuario realmente haya pedido eliminar un producto del carrito.
-            5. MAPEO SEMÁNTICO: Si el detalle coincide con un modificador del catálogo, úsalo en 'modifiers'. Si es preparación (ej: "bien cocido"), úsalo en 'notes'.
-            6. UNICIDAD: El array 'items' debe contener solo los CAMBIOS del último mensaje. No repitas lo confirmado.
-            7. IDENTIDAD: Extrae nombres de personas reales, no de productos.
-            8. ACCIONES: Cada ítem DEBE llevar su propia 'action' (ADD o REMOVE).
-9. CAMBIOS:
-- Solo usa REMOVE si el usuario explícitamente pide quitar un producto completo del carrito.
-- Frases como "sin cebolla", "sin mayonesa", "con queso", "extra tocino"
-  NO significan REMOVE.
-- Esos cambios deben ir dentro de modifiers o notes del MISMO producto.
-- Nunca elimines automáticamente un producto solo porque el usuario cambió ingredientes.            10. STOCK: Si el historial dice "solo quedan X", y el usuario dice "sí" o "ok", usa esa cantidad exacta.
-            11. LOGÍSTICA: Si el usuario dice "cambiar a recoger", marca 'modoEntrega': 'PICKUP' y deja 'direccion': null.
-            12. QUEJAS: Si hay quejas (ej: "faltó algo"), no vendas. Pide disculpas y di que un humano lo revisará.
-            13. ATRIBUTOS: No apliques "light" o "frío" de un pedido anterior a uno nuevo automáticamente. Pregunta si hay duda.
-            14. CANTIDADES: Si ves "2 refrescos", el 2 es 'quantity'. El catálogo tiene números (ej: 1. Coca), úsalos como referencia de nombre.
+Último producto mencionado:
+"${lastProductDiscussed || "ninguno"}"
 
-        CATÁLOGO DISPONIBLE:
-        ${menuSimplified}
+Configuración especial del negocio:
+${restauranteConfig}
 
-        JSON FORMAT:
+━━━━━━━━━━━━━━━━━━
+REGLAS TRANSACCIONALES
+━━━━━━━━━━━━━━━━━━
+
+1. El array "items" debe contener SOLO cambios nuevos
+del último mensaje del cliente.
+
+2. Nunca elimines productos automáticamente.
+
+3. Solo usa:
+"action": "REMOVE"
+
+si el cliente explícitamente pide eliminar un producto completo.
+
+Ejemplos válidos:
+- "quita el producto"
+- "elimina eso del carrito"
+
+4. Frases como:
+- "sin"
+- "con"
+- "extra"
+- "agrega"
+- "quita ingrediente"
+
+NO significan REMOVE.
+
+Son modificaciones del mismo producto.
+
+5. Si el mismo producto tiene modificaciones distintas,
+debes separarlo en múltiples items independientes.
+
+Ejemplo conceptual:
+- un producto con una modificación
+- otro producto igual con otra modificación
+
+=> crear items separados.
+
+━━━━━━━━━━━━━━━━━━
+REGLAS DE MODIFICADORES
+━━━━━━━━━━━━━━━━━━
+
+6. Si la modificación coincide con una opción real del catálogo,
+debe ir dentro de "modifiers".
+
+7. Formato obligatorio:
+
+"modifiers": [
+  {
+    "type": "ADD_INGREDIENT | REMOVE_INGREDIENT | EXTRA_INGREDIENT",
+    "value": "nombre exacto"
+  }
+]
+
+8. Si la modificación NO existe en el catálogo
+pero representa una preparación o preferencia válida,
+guárdala en "notes".
+
+Ejemplos:
+- "muy caliente"
+- "poco hielo"
+- "bien cocido"
+
+━━━━━━━━━━━━━━━━━━
+REGLAS DE CONTEXTO
+━━━━━━━━━━━━━━━━━━
+
+9. Puedes usar contexto SOLO para referencias explícitas como:
+- "el mismo"
+- "otro igual"
+- "ese"
+- "la misma"
+
+10. Nunca heredes automáticamente atributos
+entre productos distintos.
+
+━━━━━━━━━━━━━━━━━━
+REGLAS DE CATÁLOGO
+━━━━━━━━━━━━━━━━━━
+
+11. Usa SIEMPRE el nombre exacto del catálogo.
+
+12. Nunca traduzcas, inventes ni parafrasees nombres.
+
+13. Si un producto no existe exactamente en el catálogo,
+marca el resultado como:
+"status": "NO_DISPONIBLE"
+
+14. Si el usuario menciona números:
+"2 productos"
+
+el número representa quantity.
+
+15. Los números visuales del catálogo:
+"1. Producto"
+
+son referencias visuales,
+NO cantidades.
+
+━━━━━━━━━━━━━━━━━━
+REGLAS LOGÍSTICAS
+━━━━━━━━━━━━━━━━━━
+
+16. Si el usuario cambia a recoger:
+- modoEntrega = "PICKUP"
+- direccion = null
+
+17. Extrae únicamente:
+- nombre
+- direccion
+- metodoPago
+- modoEntrega
+- notasPago
+- notasCocina
+
+18. Nunca inventes información faltante.
+
+━━━━━━━━━━━━━━━━━━
+REGLAS DE INCIDENTES
+━━━━━━━━━━━━━━━━━━
+
+19. Si el cliente reporta problemas o quejas:
+- faltantes
+- errores
+- productos incorrectos
+- reclamos
+
+NO vendas productos.
+
+Responde de forma empática
+y deja "items" vacío.
+
+━━━━━━━━━━━━━━━━━━
+RESPUESTA HUMANA
+━━━━━━━━━━━━━━━━━━
+
+20. "waiterMessage" debe ser:
+- breve
+- natural
+- humano
+- profesional
+
+21. Nunca menciones:
+- JSON
+- modifiers
+- REMOVE
+- actions
+- estructuras técnicas
+
+22. Ejemplo correcto:
+"He anotado los cambios de tu producto."
+
+
+━━━━━━━━━━━━━━━━━━
+CATÁLOGO DISPONIBLE
+━━━━━━━━━━━━━━━━━━
+
+${menuSimplified}
+
+━━━━━━━━━━━━━━━━━━
+FORMATO JSON OBLIGATORIO
+━━━━━━━━━━━━━━━━━━
+
+{
+  "items": [
+    {
+      "action": "ADD | REMOVE",
+      "productName": "Nombre exacto del catálogo",
+      "quantity": 1,
+
+      "modifiers": [
         {
-          "items": [{ 
-              "action": "ADD | REMOVE", 
-              "productName": "Nombre exacto del catálogo", 
-              "quantity": 1, 
-              "modifiers": [], 
-              "notes": "null" 
-          }],
-          "status": "COMPLETO | AMBIGUO | NO_DISPONIBLE",
-          "waiterMessage": "Respuesta humana breve",
-          "extractedData": {
-            "nombre": "string | null",
-            "direccion": "string | null",
-            "metodoPago": "EFECTIVO | TRANSFERENCIA | TARJETA | null",
-            "modoEntrega": "DELIVERY | PICKUP | null",
-            "notasPago": "string | null",
-            "notasCocina": "string | null"
-          }
-        }`;
+          "type": "ADD_INGREDIENT | REMOVE_INGREDIENT | EXTRA_INGREDIENT",
+          "value": "nombre exacto"
+        }
+      ],
+
+      "notes": "string | null"
+    }
+  ],
+
+  "status": "COMPLETO | AMBIGUO | NO_DISPONIBLE",
+
+  "waiterMessage": "Respuesta breve y natural",
+
+  "extractedData": {
+    "nombre": "string | null",
+    "direccion": "string | null",
+    "metodoPago": "EFECTIVO | TRANSFERENCIA | TARJETA | null",
+    "modoEntrega": "DELIVERY | PICKUP | null",
+    "notasPago": "string | null",
+    "notasCocina": "string | null"
+  }
+}
+`;
 
     // --- 4. LLAMADA A OPENAI ---
     const response = await openai.chat.completions.create({
@@ -169,7 +341,7 @@ export const analizarPedidoConIA = async (
 
     return resJSON;
   } catch (error) {
-    logger.error(`Error en IA Motor: ${error.message}`);
+    logger.error(`[SaaS AI Utils] Error en IA Motor: ${error.message}`);
     return {
       items: [],
       status: "ERROR",

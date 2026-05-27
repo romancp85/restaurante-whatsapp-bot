@@ -23,6 +23,8 @@ import { getUltimoPedido } from "../loyaltyService.js";
 
 import { enviarBotonesContinuar, enviarListaParaQuitar } from "./buttonUI.js";
 
+import CONVERSATION_STATES from "../../constants/conversationStates.js";
+
 export const handleInteractiveMessage = async ({
   userId,
   businessId,
@@ -38,7 +40,8 @@ export const handleInteractiveMessage = async ({
     messageObject.interactive.list_reply?.id;
 
   if (
-    cart.conversationState === "AWAITING_AMBIGUOUS_SELECTION" &&
+    cart.conversationState ===
+      CONVERSATION_STATES.AWAITING_AMBIGUOUS_SELECTION &&
     actionId?.startsWith("AMBIGUOUS_")
   ) {
     const index = Number(actionId.split("_")[1]);
@@ -72,7 +75,7 @@ export const handleInteractiveMessage = async ({
     );
 
     await updateCart(userId, businessId, {
-      conversationState: "MOSTRANDO_MENU",
+      conversationState: CONVERSATION_STATES.MOSTRANDO_MENU,
 
       tempData: {
         ...cart.tempData,
@@ -105,7 +108,7 @@ export const handleInteractiveMessage = async ({
         if (!res.success) itemsFallidos.push(item.nombre);
       }
       await updateCart(userId, businessId, {
-        conversationState: "PROPUESTA_VIP",
+        conversationState: CONVERSATION_STATES.PROPUESTA_VIP,
         tempData: {
           ...cart.tempData,
           name: ultimo.nombreCliente,
@@ -157,7 +160,7 @@ export const handleInteractiveMessage = async ({
 
   if (actionId === "VIP_CAMBIAR_DATOS") {
     await updateCart(userId, businessId, {
-      conversationState: "PREGUNTANDO_MODO_ENTREGA",
+      conversationState: CONVERSATION_STATES.PREGUNTANDO_MODO_ENTREGA,
       tempData: {
         ...cart.tempData,
         deliveryMode: null,
@@ -189,7 +192,7 @@ export const handleInteractiveMessage = async ({
 
   if (actionId === "MENU" || actionId === "MENU_NUEVO") {
     await updateCart(userId, businessId, {
-      conversationState: "MOSTRANDO_MENU",
+      conversationState: CONVERSATION_STATES.MOSTRANDO_MENU,
       tempData: {
         ...cart.tempData,
         deliveryMode: null,

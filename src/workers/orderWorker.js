@@ -26,7 +26,9 @@ import { processDirectOrder } from "../services/directOrderService.js";
 
 import { getOrCreateCart } from "../whatsapp/cartUtils.js";
 
-console.log("👷 [Worker] Orquestador SaaS iniciado y escuchando...");
+import logger from "../utils/logger.js";
+
+logger.info("[Worker] Orquestador SaaS iniciado y escuchando...");
 
 // ==========================================
 // WORKER
@@ -41,8 +43,8 @@ const orderWorker = new Worker(
     const { businessId, auth, userId, messageObject, restauranteConfig } =
       job.data;
 
-    console.log(
-      `\n🔥 [Worker] Tarea recibida: ${source} | ID: ${job.id} | Tipo: ${messageObject?.type}`,
+    logger.info(
+      `[Worker] Tarea recibida: ${source} | ID: ${job.id} | Tipo: ${messageObject?.type}`,
     );
 
     try {
@@ -123,7 +125,7 @@ const orderWorker = new Worker(
         return await processDirectOrder(job.data);
       }
     } catch (e) {
-      console.error("❌ [Worker Error] Fallo crítico:", e);
+      logger.error("[Worker Error] ❌ Fallo crítico:", e);
     }
   },
 
@@ -131,7 +133,7 @@ const orderWorker = new Worker(
 );
 
 orderWorker.on("completed", (job) => {
-  console.log(`✅ [Worker] Tarea completada: ${job.id}`);
+  logger.info(`[Worker] ✅ Tarea completada: ${job.id}`);
 });
 
 export default orderWorker;

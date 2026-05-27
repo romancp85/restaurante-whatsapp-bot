@@ -16,6 +16,8 @@ import { handleConversationState } from "./handleConversationState.js";
 
 import { enviarBotonesContinuar } from "./buttonUI.js";
 
+import { logger } from "../../utils/logger.js";
+
 export const handleTextMessage = async ({
   userId,
   businessId,
@@ -65,7 +67,7 @@ export const handleTextMessage = async ({
       },
     });
 
-    console.log(
+    logger.info(
       `[Semantic] menuMap cargado desde DB: ${menuMap.length} productos`,
     );
   }
@@ -83,7 +85,7 @@ export const handleTextMessage = async ({
       cart,
     });
   } catch (err) {
-    console.error("[Semantic] Error:", err.message);
+    logger.error("[Semantic] Error:", err.message);
 
     semanticResult = {
       semanticItems: [],
@@ -179,7 +181,7 @@ export const handleTextMessage = async ({
       quantity: 1,
     });
 
-    console.log("[Semantic] Context fallback aplicado:", finalSemanticItems);
+    logger.info("[Semantic] Context fallback aplicado:", finalSemanticItems);
   }
 
   // =====================================================
@@ -210,7 +212,7 @@ export const handleTextMessage = async ({
         operations,
       });
     } catch (err) {
-      console.error("[AI] Error getIntention:", err.message);
+      logger.error("[AI] Error getIntention:", err.message);
 
       aiResponse = {
         items: [],

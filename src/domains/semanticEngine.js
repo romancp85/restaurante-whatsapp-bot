@@ -8,6 +8,7 @@ import { executeSemanticOperations } from "./semantic/engine/executeSemanticOper
 import { rankProductCandidates } from "./semantic/ranking/rankProductCandidates.js";
 
 import { segmentIntents } from "./semantic/parsers/intentSegmenter.js";
+import { logger } from "../utils/logger.js";
 
 // =====================================================
 // HELPERS
@@ -37,6 +38,47 @@ export async function processSemanticMessage({
         ? cart.tempData.menuMap
         : [];
 
+  const COMPLEX_PATTERNS = [
+    /una con/i,
+    /una sin/i,
+    /otra con/i,
+    /otra sin/i,
+
+    /primera/i,
+    /segunda/i,
+    /tercera/i,
+
+    /\d+\s+con/i,
+    /\d+\s+sin/i,
+
+    /adem[aá]s/i,
+    /sin\s+\w+/i,
+    /extra\s+\w+/i,
+
+    /mitad/i,
+    /agrega/i,
+    /combo/i,
+    /separad[oa]/i,
+    /distint[oa]s/i,
+  ];
+
+  const normalizedText = safeText.toLowerCase();
+
+  const isComplexMessage = COMPLEX_PATTERNS.some((pattern) =>
+    pattern.test(normalizedText),
+  );
+
+  if (isComplexMessage) {
+    logger.info("[SemanticEngine] Mensaje complejo detectado. Delegando a IA.");
+
+    return {
+      semanticItems: [],
+      operations: [],
+      references: [],
+      contextReference: null,
+    };
+  }
+
   // =====================================================
   // SEGMENTATION
   // =====================================================
@@ -54,7 +96,7 @@ export async function processSemanticMessage({
   for (const chunk of segments) {
     if (!chunk) continue;
 
-    console.log("[SemanticEngine] Chunk:", chunk);
+    logger.debug("[SemanticEngine] Chunk:", { chunk });
 
     // =====================================================
     // INDEX REFERENCES
@@ -65,7 +107,7 @@ export async function processSemanticMessage({
     try {
       chunkIndexReferences = safeArray(extractReferences(chunk));
     } catch (err) {
-      console.error("[SemanticEngine] extractReferences:", err.message);
+      logger.error("[SemanticEngine] extractReferences:", err.message);
     }
 
     // =====================================================
@@ -81,12 +123,11 @@ export async function processSemanticMessage({
           menuMap: safeMenuMap,
         }),
       );
-      console.log(
-        "[SemanticEngine] productCandidates:",
-        JSON.stringify(productCandidates, null, 2),
-      );
+      logger.debug("[SemanticEngine] productCandidates:", {
+        productCandidates,
+      });
     } catch (err) {
-      console.error("[SemanticEngine] detectProductReferences:", err.message);
+      logger.error("[SemanticEngine] detectProductReferences:", err.message);
     }
 
     // =====================================================
@@ -102,12 +143,9 @@ export async function processSemanticMessage({
       ranking = rankProductCandidates({
         candidates: productCandidates,
       });
-      console.log(
-        "[SemanticEngine] ranking:",
-        JSON.stringify(ranking, null, 2),
-      );
+      logger.debug("[SemanticEngine] ranking:", { ranking });
     } catch (err) {
-      console.error("[SemanticEngine] ranking:", err.message);
+      logger.error("[SemanticEngine] ranking:", err.message);
     }
 
     // =====================================================
@@ -164,10 +202,10 @@ export async function processSemanticMessage({
         inferOperations(chunk, chunkReferences, menuMap),
       );
     } catch (err) {
-      console.error("[SemanticEngine] inferOperations:", err.message);
+      logger.error("[SemanticEngine] inferOperations:", err.message);
     }
 
-    console.log("[SemanticEngine] Operations:", chunkOperations);
+    logger.debug("[SemanticEngine] Operations:", { chunkOperations });
 
     operations.push(...chunkOperations);
   }
@@ -213,7 +251,7 @@ export async function processSemanticMessage({
       menuMap: safeMenuMap,
     });
   } catch (err) {
-    console.error("[SemanticEngine] context:", err.message);
+    logger.error("[SemanticEngine] context:", err.message);
   }
 
   // =====================================================
@@ -231,7 +269,7 @@ export async function processSemanticMessage({
       }),
     );
   } catch (err) {
-    console.error("[SemanticEngine] execute:", err.message);
+    logger.error("[SemanticEngine] execute:", err.message);
   }
 
   // =====================================================
